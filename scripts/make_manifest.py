@@ -93,7 +93,7 @@ def main():
     site_block = {
         "id": args.site,
         "city": s["label"],
-        "state": "",
+        "state": sub.split(",")[0].strip() if "," in sub else "",
         "country": sub.split(",")[-1].strip() if sub else "",
         "name": f"{s['label']}, {sub}" if sub else s["label"],
         "lat": s["lat"], "lon": s["lon"],
