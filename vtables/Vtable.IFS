@@ -1,0 +1,23 @@
+GRIB1| Level| From |  To  | metgrid  | metgrid | metgrid                                  |GRIB2|GRIB2|GRIB2|GRIB2|
+Param| Type |Level1|Level2| Name     | Units   | Description                              |Discp|Catgy|Param|Level|
+-----+------+------+------+----------+---------+------------------------------------------+-----+-----+-----+-----+
+ 130 | 100  |   *  |      | TT       | K       | Temperature                              |  0  |  0  |  0  | 100 |
+ 131 | 100  |   *  |      | UU       | m s-1   | U                                        |  0  |  2  |  2  | 100 |
+ 132 | 100  |   *  |      | VV       | m s-1   | V                                        |  0  |  2  |  3  | 100 |
+ 157 | 100  |   *  |      | RH       | %       | Relative Humidity                        |  0  |  1  |  1  | 100 |
+ 156 | 100  |   *  |      | HGT      | m       | Height                                   |  0  |  3  |  5  | 100 |
+ 167 | 105  |   2  |      | TT       | K       | Temperature at 2 m                       |  0  |  0  |  0  | 103 |
+ 168 | 105  |   2  |      | DEWPT    | K       | Dewpoint at 2 m                          |  0  |  0  |  6  | 103 |
+ 165 | 105  |  10  |      | UU       | m s-1   | U at 10 m                                |  0  |  2  |  2  | 103 |
+ 166 | 105  |  10  |      | VV       | m s-1   | V at 10 m                                |  0  |  2  |  3  | 103 |
+ 151 | 102  |   0  |      | PMSL     | Pa      | Sea-level Pressure                       |  0  |  3  |  0  | 101 |
+ 134 |  1   |   0  |      | PSFC     | Pa      | Surface Pressure                         |  0  |  3  |  0  |  1  |
+ 235 |  1   |   0  |      | SKINTEMP | K       | Skin temperature (SST over water)        |  0  |  0  | 17  |  1  |
+-----+------+------+------+----------+---------+------------------------------------------+-----+-----+-----+-----+
+#
+# Vtable for ECMWF IFS 0.25-degree open data (GRIB2, data.ecmwf.int).
+# Atmosphere + surface only. IFS open data encodes soil (sot/vsw) on GRIB2
+# level type 151 ("soil level"), which WPS 4.3 ungrib cannot read — soil,
+# LANDSEA and SOILHGT come from a same-cycle GFS subset instead (see
+# fetch_gfs_soil.sh), ungribbed with Vtable.GFS under the SOIL prefix.
+# RH at 2 m is derived by ungrib from TT + DEWPT (rrpr.F compute_rh_dewpt).

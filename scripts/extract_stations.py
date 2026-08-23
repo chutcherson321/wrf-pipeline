@@ -68,7 +68,6 @@ def extract_site_timeseries(ncs, site_key):
 
     rainc = grab("RAINC", None, 0.0)
     rainnc = grab("RAINNC", None, 0.0)
-    rain_in = np.diff(rainc + rainnc, prepend=0) / 25.4
 
     try:
         cv = wrf.getvar(ncs, "cloudfrac", timeidx=wrf.ALL_TIMES, method="cat").values
@@ -86,7 +85,7 @@ def extract_site_timeseries(ncs, site_key):
         "v10_kts": v10 * 1.944,
         "gust_kts": wspd_ms * 1.944 * 1.1,  # same approximation as the notebook
         "temp_f": temp_f,
-        "rain_in": rain_in,
+        "rain_acc_mm": rainc + rainnc,
         "cloud_pct": cloud,
         "cape": cape,
         "cin": cin,
@@ -94,6 +93,13 @@ def extract_site_timeseries(ncs, site_key):
         "pw_mm": pw,
     }, index=times)
     df.index.name = "time"
+
+    # Segmented runs concatenate wrfouts from several restart segments: the
+    # restart-time frame can appear in two files, so dedupe and sort before
+    # differencing the accumulated rain.
+    df = df[~df.index.duplicated(keep="first")].sort_index()
+    rain_acc = df.pop("rain_acc_mm")
+    df["rain_in"] = rain_acc.diff().fillna(rain_acc.iloc[0]) / 25.4
     return df, (int(j), int(i))
 
 
