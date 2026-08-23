@@ -12,6 +12,7 @@ Usage:
 import argparse
 import glob
 import json
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -63,6 +64,8 @@ def extract_site_timeseries(ncs, site_key):
     cin = grab("cape_2d", 1, 0.0)
     mdbz = grab("mdbz", None, 0.0)
     pw = grab("pw", None, 0.0)
+    dewp_c = grab("td2", None, np.nan)   # degC
+    slp = grab("slp", None, np.nan)      # hPa
     t2 = grab("T2", None, np.nan)
     temp_f = (t2 - 273.15) * 9 / 5 + 32
 
@@ -72,11 +75,14 @@ def extract_site_timeseries(ncs, site_key):
     try:
         cv = wrf.getvar(ncs, "cloudfrac", timeidx=wrf.ALL_TIMES, method="cat").values
         if cv.shape[0] == 3 and cv.ndim == 4:
-            cloud = (1 - np.prod(1 - cv[:, :, j, i], axis=0)) * 100
+            lvls = cv[:, :, j, i]        # (3, Time): low/mid/high
         else:
-            cloud = (1 - np.prod(1 - cv[:, :, j, i], axis=1)) * 100
+            lvls = cv[:, :, j, i].T      # (Time, 3) -> (3, Time)
+        cloud = (1 - np.prod(1 - lvls, axis=0)) * 100
+        cl, cm, ch = (l * 100 for l in lvls)
     except Exception:
         cloud = np.full(len(times), np.nan)
+        cl = cm = ch = np.full(len(times), np.nan)
 
     df = pd.DataFrame({
         "wspd_kts": wspd_ms * 1.944,
@@ -88,6 +94,9 @@ def extract_site_timeseries(ncs, site_key):
         "rain_acc_mm": rainc + rainnc,
         "cloud_pct": cloud,
         "cape": cape,
+        "dewp_f": dewp_c * 9 / 5 + 32,
+        "mslp_hpa": slp,
+        "cl_pct": cl, "cm_pct": cm, "ch_pct": ch,
         "cin": cin,
         "mdbz": mdbz,
         "pw_mm": pw,
@@ -110,6 +119,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cycle", default=None)
     ap.add_argument("--forcing", default="gfs")
+    ap.add_argument("--model-id", default=None, help="windstack model id; default wrf-<forcing>")
     args = ap.parse_args()
 
     paths = sorted(glob.glob(args.wrfout_glob))
@@ -122,6 +132,8 @@ def main():
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    WINDSTACK_ONLY = ["dewp_f", "mslp_hpa", "cl_pct", "cm_pct", "ch_pct"]
+    station_df = df.drop(columns=WINDSTACK_ONLY)
     payload = {
         "site": args.site,
         "label": SITES[args.site]["label"],
@@ -131,11 +143,44 @@ def main():
         "cycle": args.cycle,
         "grid_ji": [j, i],
         "source_files": [Path(p).name for p in paths],
-        "series": json.loads(df.reset_index().to_json(orient="records", date_format="iso")),
+        "series": json.loads(station_df.reset_index().to_json(orient="records", date_format="iso")),
     }
     out_file = out_dir / f"{args.site}.json"
     out_file.write_text(json.dumps(payload))
     print(f"{out_file}: {len(df)} steps, {df.index[0]} -> {df.index[-1]}")
+
+    # Windstack model file (DISPLAY_SPEC contract: kt / degF / hPa / in-per-step,
+    # cl-cm-ch split, null = missing). Written alongside the station JSON.
+    if args.cycle:
+        init = datetime.strptime(args.cycle, "%Y%m%d%H")
+        model_id = args.model_id or f"wrf-{args.forcing}"
+
+        def num(x, nd=1):
+            return None if pd.isna(x) else round(float(x), nd)
+
+        def intv(x):
+            return None if pd.isna(x) else int(round(float(x)))
+
+        series = []
+        for ts, row in df.iterrows():
+            fh = int(round((ts.to_pydatetime() - init).total_seconds() / 3600))
+            if fh < 0:
+                continue
+            series.append({
+                "fh": fh,
+                "wspd": num(row["wspd_kts"]), "gust": num(row["gust_kts"]),
+                "wdir": None if pd.isna(row["wdir"]) else int(round(row["wdir"])) % 360,
+                "t2m": num(row["temp_f"]), "dewp": num(row["dewp_f"]),
+                "mslp": num(row["mslp_hpa"]),
+                "qpf": num(row["rain_in"], 2),
+                "cl": intv(row["cl_pct"]), "cm": intv(row["cm_pct"]), "ch": intv(row["ch_pct"]),
+                "vis": None,  # no clean vis diagnostic in this WRF build
+            })
+        ws = {"model": model_id, "cycle": args.cycle,
+              "init": init.strftime("%Y-%m-%dT%H:00Z"), "series": series}
+        ws_file = out_dir / f"windstack-{model_id}.json"
+        ws_file.write_text(json.dumps(ws))
+        print(f"{ws_file}: {len(series)} steps (windstack contract)")
 
 
 if __name__ == "__main__":

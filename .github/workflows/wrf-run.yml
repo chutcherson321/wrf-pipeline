@@ -360,9 +360,9 @@ jobs:
           fi
           echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
 
-      # Optional: push the station JSON to R2 so the live compare page can
-      # fetch it. No-ops until the three R2_* secrets are set on this repo.
-      - name: Publish station JSON to R2
+      # Push the windstack-contract model file + refreshed manifest to R2 so
+      # the live page can fetch them. No-ops until the three R2_* secrets exist.
+      - name: Publish windstack data to R2
         if: env.R2_ACCESS_KEY_ID != ''
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -371,11 +371,19 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: |
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          DEST="s3://wavetrak-frames/wrf/$SITE"
+          MODEL="wrf-$FORCING"
+          DEST="s3://wavetrak-frames/wrf/$SITE/$MODEL"
           aws s3 cp --endpoint-url "$EP" --region auto \
-            "wrf_store/$SITE.json" "$DEST/wrf-$FORCING/latest.json" \
+            "wrf_store/windstack-$MODEL.json" "$DEST/$CYCLE.json" \
             --content-type application/json
           aws s3 cp --endpoint-url "$EP" --region auto \
-            "wrf_store/$SITE.json" "$DEST/wrf-$FORCING/$CYCLE.json" \
+            "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
             --content-type application/json
-          echo "R2: $DEST/wrf-$FORCING/{latest,$CYCLE}.json"
+          aws s3api list-objects-v2 --endpoint-url "$EP" --region auto \
+            --bucket wavetrak-frames --prefix "wrf/$SITE/" > listing.json
+          python3 scripts/make_manifest.py --site "$SITE" --listing listing.json \
+            --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" --out manifest.json
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
+            --content-type application/json
+          echo "R2: $DEST/{latest,$CYCLE}.json + wrf/manifest.json"
