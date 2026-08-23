@@ -1,0 +1,105 @@
+name: backfill
+
+# Re-extract a stored release's wrfout tar with the current extractor and
+# publish windstack-contract files to R2 — for runs that completed before the
+# windstack publisher (or R2 secrets) existed.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag on the private repo holding wrfout_d02.tar
+        required: true
+      site:
+        default: cloudbreak
+      forcing:
+        description: Forcing model (names the wrf-<forcing> member)
+        required: true
+      cycle:
+        description: Cycle YYYYMMDDHH the release holds
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CONFIG_REPO: chutcherson321/wavetrak-wrf
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+      SITE: ${{ inputs.site }}
+      FORCING: ${{ inputs.forcing }}
+      CYCLE: ${{ inputs.cycle }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch sites.json (private repo)
+        run: |
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            | tar -xz --strip-components=1 --wildcards '*/sites.json'
+
+      - name: Download release wrfout
+        run: |
+          gh release download "${{ inputs.tag }}" -R "$CONFIG_REPO" -p wrfout_d02.tar
+          mkdir -p run_dir/wrf
+          tar -xf wrfout_d02.tar -C run_dir/wrf
+          ls run_dir/wrf | head
+
+      - name: Set up extraction environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: extract
+          create-args: python=3.12 wrf-python netcdf4 pandas numpy
+          cache-environment: true
+
+      - name: Extract (handles flat and segmented tar layouts)
+        shell: bash -el {0}
+        run: |
+          micromamba activate extract
+          python scripts/extract_stations.py --site "$SITE" \
+              --wrfout-glob 'run_dir/wrf/wrfout_d02_*' --out wrf_store \
+              --cycle "$CYCLE" --forcing "$FORCING" \
+          || python scripts/extract_stations.py --site "$SITE" \
+              --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --out wrf_store \
+              --cycle "$CYCLE" --forcing "$FORCING"
+
+      - name: Publish to R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          MODEL="wrf-$FORCING"
+          DEST="s3://wavetrak-frames/wrf/$SITE/$MODEL"
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            "wrf_store/windstack-$MODEL.json" "$DEST/$CYCLE.json" \
+            --content-type application/json
+          # latest.json only if this backfilled cycle is the model's newest
+          aws s3api list-objects-v2 --endpoint-url "$EP" --region auto \
+            --bucket wavetrak-frames --prefix "wrf/$SITE/$MODEL/" > model_listing.json
+          NEWEST=$(python3 -c "
+          import json, re
+          keys = [o['Key'] for o in json.load(open('model_listing.json')).get('Contents', [])]
+          cyc = sorted(m.group(1) for k in keys if (m := re.search(r'/(\d{10})\.json$', k)))
+          print(cyc[-1] if cyc else '')")
+          if [ "$CYCLE" = "$NEWEST" ]; then
+            aws s3 cp --endpoint-url "$EP" --region auto \
+              "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
+              --content-type application/json
+            echo "latest.json updated ($CYCLE is newest)"
+          else
+            echo "latest.json untouched (newest is $NEWEST)"
+          fi
+          aws s3api list-objects-v2 --endpoint-url "$EP" --region auto \
+            --bucket wavetrak-frames --prefix "wrf/$SITE/" > listing.json
+          python3 scripts/make_manifest.py --site "$SITE" --listing listing.json \
+            --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" --out manifest.json
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
+            --content-type application/json
+          echo "Backfilled $DEST/$CYCLE.json + manifest"
