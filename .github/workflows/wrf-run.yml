@@ -1,0 +1,119 @@
+name: wrf-run
+
+on:
+  schedule:
+    # 00z and 12z GFS cycles at 72h — crons fire ~30min after the final
+    # boundary file typically lands on S3; cycle=auto walks back if late.
+    - cron: "15 5 * * *"
+    - cron: "15 17 * * *"
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site key (must exist in the private config repo)
+        default: cloudbreak
+      cycle:
+        description: GFS cycle YYYYMMDDHH, or "auto" for newest complete
+        default: auto
+      hours:
+        description: Forecast length (hours, multiple of 6)
+        default: "72"
+      upload_wrfout:
+        description: Attach wrfout_d02 netCDF to the private release
+        type: boolean
+        default: true
+
+# This is a PUBLIC repo: the workflow gets a read-only token for this repo,
+# never writes here, and publishes results only to the private repo below.
+permissions:
+  contents: read
+
+env:
+  CONFIG_REPO: chutcherson321/wavetrak-wrf
+
+jobs:
+  wrf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      SITE: ${{ inputs.site || 'cloudbreak' }}
+      CYCLE: ${{ inputs.cycle || 'auto' }}
+      HOURS: ${{ inputs.hours || '72' }}
+      UPLOAD_WRFOUT: ${{ inputs.upload_wrfout == '' && 'true' || inputs.upload_wrfout }}
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch site configs (private repo)
+        run: |
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
+          test -f "sites/$SITE/namelist.input" || { echo "unknown site: $SITE"; exit 1; }
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Resolve GFS cycle
+        id: cycle
+        run: |
+          chmod +x scripts/*.sh
+          if [ "$CYCLE" = "auto" ]; then CYCLE=$(scripts/latest_cycle.sh "$HOURS"); fi
+          echo "cycle=$CYCLE" >> "$GITHUB_OUTPUT"
+          echo "Resolved GFS cycle: $CYCLE"
+
+      - name: Pull WRF container
+        run: docker pull dtcenter/wps_wrf
+
+      - name: Download GFS
+        run: scripts/fetch_gfs.sh "${{ steps.cycle.outputs.cycle }}" "$HOURS" run_dir
+
+      - name: Stage run directory
+        run: |
+          python3 scripts/make_namelists.py --site "$SITE" \
+            --cycle "${{ steps.cycle.outputs.cycle }}" --hours "$HOURS" --out run_dir
+          cp "sites/$SITE/geo_em.d01.nc" "sites/$SITE/geo_em.d02.nc" run_dir/
+
+      - name: Run WPS + WRF
+        run: scripts/run_pipeline.sh "$SITE" run_dir "$(nproc)"
+
+      - name: WRF logs on failure
+        if: failure()
+        run: |
+          echo "=== rsl.error tails ==="
+          for f in run_dir/wrf/rsl.error.* run_dir/wrf/rsl.out.0000 run_dir/*.log; do
+            [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
+          done || true
+
+      - name: Set up extraction environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: extract
+          create-args: python=3.12 wrf-python netcdf4 pandas numpy
+          cache-environment: true
+
+      - name: Extract station JSON
+        shell: bash -el {0}
+        run: |
+          micromamba activate extract
+          python scripts/extract_stations.py --site "$SITE" \
+            --wrfout-glob 'run_dir/wrf/wrfout_d02_*' --out wrf_store \
+            --cycle "${{ steps.cycle.outputs.cycle }}" --forcing gfs
+
+      # Results go to a release on the PRIVATE repo — this public repo keeps
+      # no artifacts, so forecast data never becomes publicly downloadable.
+      - name: Publish results to private repo
+        run: |
+          CYC="${{ steps.cycle.outputs.cycle }}"
+          TAG="wrf-$SITE-$CYC"
+          gh release create "$TAG" -R "$CONFIG_REPO" \
+            --title "WRF $SITE $CYC (+${HOURS}h)" \
+            --notes "Automated run from the public pipeline. GFS cycle $CYC, ${HOURS}h forecast." \
+            2>/dev/null || true
+          gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
+          if [ "$UPLOAD_WRFOUT" = "true" ]; then
+            tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls wrfout_d02_*)
+            gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
+          fi
+          echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
