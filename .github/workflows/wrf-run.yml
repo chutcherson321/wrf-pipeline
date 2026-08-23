@@ -115,6 +115,8 @@ jobs:
           CYCLE="${{ steps.cycle.outputs.cycle }}"
           HOURS="${{ steps.params.outputs.hours }}"
           if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
+            # eccodes repacks the CCSDS-compressed open data for WPS's g2lib
+            sudo apt-get -qq update && sudo apt-get -qq install -y libeccodes-tools
             scripts/fetch_ifs.sh "$CYCLE" "$HOURS" run_dir
             scripts/fetch_gfs_soil.sh "$CYCLE" "$HOURS" run_dir
           else
