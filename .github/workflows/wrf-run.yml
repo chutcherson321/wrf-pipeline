@@ -335,6 +335,9 @@ jobs:
           python scripts/extract_stations.py --site "$SITE" \
             --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --out wrf_store \
             --cycle "$CYCLE" --forcing "$FORCING"
+          python scripts/make_wind_tiles.py \
+            --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
+            --cycle "$CYCLE" --out tiles_out
           python - <<'EOF'
           import json, os
           d = json.load(open(f"wrf_store/{os.environ['SITE']}.json"))
@@ -379,6 +382,8 @@ jobs:
           aws s3 cp --endpoint-url "$EP" --region auto \
             "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
             --content-type application/json
+          aws s3 cp --endpoint-url "$EP" --region auto --recursive --only-show-errors \
+            tiles_out "s3://wavetrak-frames/wrf/$SITE/tiles/$MODEL/$CYCLE"
           aws s3api list-objects-v2 --endpoint-url "$EP" --region auto \
             --bucket wavetrak-frames --prefix "wrf/$SITE/" > listing.json
           python3 scripts/make_manifest.py --site "$SITE" --listing listing.json \

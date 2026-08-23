@@ -66,6 +66,10 @@ jobs:
           || python scripts/extract_stations.py --site "$SITE" \
               --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --out wrf_store \
               --cycle "$CYCLE" --forcing "$FORCING"
+          python scripts/make_wind_tiles.py \
+              --wrfout-glob 'run_dir/wrf/wrfout_d02_*' --cycle "$CYCLE" --out tiles_out \
+          || python scripts/make_wind_tiles.py \
+              --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --cycle "$CYCLE" --out tiles_out
 
       - name: Publish to R2
         env:
@@ -76,6 +80,8 @@ jobs:
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           MODEL="wrf-$FORCING"
           DEST="s3://wavetrak-frames/wrf/$SITE/$MODEL"
+          aws s3 cp --endpoint-url "$EP" --region auto --recursive --only-show-errors \
+            tiles_out "s3://wavetrak-frames/wrf/$SITE/tiles/$MODEL/$CYCLE"
           aws s3 cp --endpoint-url "$EP" --region auto \
             "wrf_store/windstack-$MODEL.json" "$DEST/$CYCLE.json" \
             --content-type application/json
