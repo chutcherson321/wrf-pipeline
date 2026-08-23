@@ -23,13 +23,16 @@ MODEL_META = {
     "wrf-gfs":  {"label": "WRF-GFS",  "driver": "gfs",  "kind": "wrf",    "family": "NCEP"},
     "wrf-ifs":  {"label": "WRF-IFS",  "driver": "ifs",  "kind": "wrf",    "family": "ECMWF"},
     "wrf-aifs": {"label": "WRF-AIFS", "driver": "aifs", "kind": "wrf",    "family": "ECMWF"},
+    "wrf-icon": {"label": "WRF-ICON", "driver": "icon", "kind": "wrf",    "family": "DWD"},
     "gfs":      {"label": "GFS",      "driver": "gfs",  "kind": "global", "family": "NCEP"},
     "ifs":      {"label": "IFS",      "driver": "ifs",  "kind": "global", "family": "ECMWF"},
+    "ecm":      {"label": "ECMWF",    "driver": "ecm",  "kind": "global", "family": "ECMWF"},
     "aifs":     {"label": "AIFS",     "driver": "aifs", "kind": "global", "family": "ECMWF"},
+    "icon":     {"label": "ICON",     "driver": "icon", "kind": "global", "family": "DWD"},
 }
 MODEL_ORDER = list(MODEL_META)
-FAMILIES = {"gfs": "NCEP", "ifs": "ECMWF", "aifs": "ECMWF"}
-FAMILY_LABELS = {"NCEP": "NCEP / GFS", "ECMWF": "ECMWF / IFS"}
+FAMILIES = {"gfs": "NCEP", "ifs": "ECMWF", "ecm": "ECMWF", "aifs": "ECMWF", "icon": "DWD"}
+FAMILY_LABELS = {"NCEP": "NCEP / GFS", "ECMWF": "ECMWF / IFS", "DWD": "DWD / ICON"}
 
 
 def cycle_label(cycle: str) -> str:
