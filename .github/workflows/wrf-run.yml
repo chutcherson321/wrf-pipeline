@@ -171,7 +171,11 @@ jobs:
       max-parallel: 1
       fail-fast: true
       matrix:
-        seg: [1, 2, 3, 4]
+        include:
+          - { seg: 1, prev: 0 }
+          - { seg: 2, prev: 1 }
+          - { seg: 3, prev: 2 }
+          - { seg: 4, prev: 3 }
     env:
       ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
       SITE: ${{ needs.prep.outputs.site }}
@@ -196,7 +200,7 @@ jobs:
         if: matrix.seg > 1
         uses: actions/download-artifact@v4
         with:
-          name: state-seg${{ matrix.seg - 1 }}
+          name: state-seg${{ matrix.prev }}
 
       - name: Resume or skip
         id: resume
