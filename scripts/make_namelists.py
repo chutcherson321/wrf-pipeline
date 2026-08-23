@@ -34,17 +34,18 @@ def rewrite_wps(text: str, start: datetime, end: datetime, forcing: str) -> str:
 # GFS pgrb2 0p25 -> 34; IFS 0p25 open data -> 14 pl + sfc = 15.
 METGRID_LEVELS = {"gfs": 34, "ifs": 15}
 
-# Restart files every 12 forecast hours so segmented runs can resume near
-# where the previous job's wall-clock budget expired (minutes of model time).
+# Restart files every 12 forecast hours (default) so segmented runs can
+# resume near where the previous job's wall-clock budget expired (minutes of
+# model time).
 RESTART_INTERVAL_MIN = 720
 
 
 def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
-                  forcing: str) -> str:
+                  forcing: str, restart_interval: int) -> str:
     days, rem = divmod(hours, 24)
     subs = {
         "num_metgrid_levels": f" num_metgrid_levels     = {METGRID_LEVELS[forcing]},",
-        "restart_interval": f" restart_interval       = {RESTART_INTERVAL_MIN},",
+        "restart_interval": f" restart_interval       = {restart_interval},",
         "run_days": f" run_days               = {days},",
         "run_hours": f" run_hours              = {rem},",
         "start_year": f" start_year             = {start.year}, {start.year},",
@@ -69,6 +70,8 @@ def main():
     ap.add_argument("--cycle", required=True, help="YYYYMMDDHH")
     ap.add_argument("--hours", type=int, default=48)
     ap.add_argument("--forcing", choices=sorted(METGRID_LEVELS), default="gfs")
+    ap.add_argument("--restart-interval", type=int, default=RESTART_INTERVAL_MIN,
+                    help="restart file cadence, minutes of model time")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -83,7 +86,7 @@ def main():
                     args.forcing))
     (out / "namelist.input").write_text(
         rewrite_input((site_dir / "namelist.input").read_text(), start, end,
-                      args.hours, args.forcing))
+                      args.hours, args.forcing, args.restart_interval))
     print(f"namelists written to {out} for {args.site} {args.cycle} "
           f"+{args.hours}h forcing={args.forcing}")
 
