@@ -359,3 +359,23 @@ jobs:
             gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
           fi
           echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
+
+      # Optional: push the station JSON to R2 so the live compare page can
+      # fetch it. No-ops until the three R2_* secrets are set on this repo.
+      - name: Publish station JSON to R2
+        if: env.R2_ACCESS_KEY_ID != ''
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          DEST="s3://wavetrak-frames/wrf/$SITE"
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            "wrf_store/$SITE.json" "$DEST/wrf-$FORCING/latest.json" \
+            --content-type application/json
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            "wrf_store/$SITE.json" "$DEST/wrf-$FORCING/$CYCLE.json" \
+            --content-type application/json
+          echo "R2: $DEST/wrf-$FORCING/{latest,$CYCLE}.json"
