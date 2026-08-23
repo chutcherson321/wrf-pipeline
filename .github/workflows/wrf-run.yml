@@ -27,6 +27,9 @@ on:
       budget_min:
         description: wrf.exe wall-clock budget per segment (minutes)
         default: "280"
+      restart_interval_min:
+        description: Restart cadence (minutes of model time)
+        default: "720"
       upload_wrfout:
         description: Attach wrfout_d02 netCDF to the private release
         type: boolean
@@ -123,7 +126,8 @@ jobs:
           python3 scripts/make_namelists.py --site "${{ steps.params.outputs.site }}" \
             --cycle "${{ steps.cycle.outputs.cycle }}" \
             --hours "${{ steps.params.outputs.hours }}" \
-            --forcing "${{ steps.params.outputs.forcing }}" --out run_dir
+            --forcing "${{ steps.params.outputs.forcing }}" \
+            --restart-interval "${{ inputs.restart_interval_min || '720' }}" --out run_dir
           cp "sites/${{ steps.params.outputs.site }}/geo_em.d01.nc" \
              "sites/${{ steps.params.outputs.site }}/geo_em.d02.nc" run_dir/
           if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
