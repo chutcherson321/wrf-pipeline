@@ -19,16 +19,22 @@ from pathlib import Path
 
 # Known models, in display order. Unknown model dirs get a generic entry so a
 # new forcing shows up (unstyled) rather than silently disappearing.
+# `runs` = the cycle hours this model is ever produced at. The WRF downscales
+# run 00/12z only (and ECMWF's 06/18z cycles are short-cutoff scda runs, so a
+# full-length WRF-IFS isn't available there even in principle). The page uses
+# this to say "not run" instead of "pending" — it is not waiting on them.
+WRF_RUNS = [0, 12]
+ALL_RUNS = [0, 6, 12, 18]
 MODEL_META = {
-    "wrf-gfs":  {"label": "WRF-GFS",  "driver": "gfs",  "kind": "wrf",    "family": "NCEP"},
-    "wrf-ifs":  {"label": "WRF-IFS",  "driver": "ifs",  "kind": "wrf",    "family": "ECMWF"},
-    "wrf-aifs": {"label": "WRF-AIFS", "driver": "aifs", "kind": "wrf",    "family": "ECMWF"},
-    "wrf-icon": {"label": "WRF-ICON", "driver": "icon", "kind": "wrf",    "family": "DWD"},
-    "gfs":      {"label": "GFS",      "driver": "gfs",  "kind": "global", "family": "NCEP"},
-    "ifs":      {"label": "IFS",      "driver": "ifs",  "kind": "global", "family": "ECMWF"},
-    "ecm":      {"label": "ECMWF",    "driver": "ecm",  "kind": "global", "family": "ECMWF"},
-    "aifs":     {"label": "AIFS",     "driver": "aifs", "kind": "global", "family": "ECMWF"},
-    "icon":     {"label": "ICON",     "driver": "icon", "kind": "global", "family": "DWD"},
+    "wrf-gfs":  {"label": "WRF-GFS",  "driver": "gfs",  "kind": "wrf",    "family": "NCEP",  "runs": WRF_RUNS},
+    "wrf-ifs":  {"label": "WRF-IFS",  "driver": "ifs",  "kind": "wrf",    "family": "ECMWF", "runs": WRF_RUNS},
+    "wrf-aifs": {"label": "WRF-AIFS", "driver": "aifs", "kind": "wrf",    "family": "ECMWF", "runs": WRF_RUNS},
+    "wrf-icon": {"label": "WRF-ICON", "driver": "icon", "kind": "wrf",    "family": "DWD",   "runs": WRF_RUNS},
+    "gfs":      {"label": "GFS",      "driver": "gfs",  "kind": "global", "family": "NCEP",  "runs": ALL_RUNS},
+    "ifs":      {"label": "IFS",      "driver": "ifs",  "kind": "global", "family": "ECMWF", "runs": ALL_RUNS},
+    "ecm":      {"label": "ECMWF",    "driver": "ecm",  "kind": "global", "family": "ECMWF", "runs": ALL_RUNS},
+    "aifs":     {"label": "AIFS",     "driver": "aifs", "kind": "global", "family": "ECMWF", "runs": ALL_RUNS},
+    "icon":     {"label": "ICON",     "driver": "icon", "kind": "global", "family": "DWD",   "runs": ALL_RUNS},
 }
 MODEL_ORDER = list(MODEL_META)
 FAMILIES = {"gfs": "NCEP", "ifs": "ECMWF", "ecm": "ECMWF", "aifs": "ECMWF", "icon": "DWD"}
@@ -66,6 +72,7 @@ def main():
             "label": mid.upper(), "driver": mid.removeprefix("wrf-"),
             "kind": "wrf" if mid.startswith("wrf-") else "global",
             "family": FAMILIES.get(mid.removeprefix("wrf-"), mid.upper()),
+            "runs": WRF_RUNS if mid.startswith("wrf-") else ALL_RUNS,
         }
         models.append({"id": mid, **meta})
 
@@ -87,7 +94,11 @@ def main():
             "id": cyc,
             "init": d.strftime("%Y-%m-%dT%H:00Z"),
             "label": cycle_label(cyc),
-            "avail": {mid: {"status": "ready"} for mid in model_ids if cyc in found[mid]},
+            "avail": {mid: ({"status": "ready"} if cyc in found[mid]
+                             else {"status": "notrun"}
+                             if int(cyc[8:]) not in (MODEL_META.get(mid, {}).get("runs") or ALL_RUNS)
+                             else {"status": "pending"})
+                      for mid in model_ids},
         })
 
     s = json.loads(Path(args.sites_json).read_text())[args.site]
