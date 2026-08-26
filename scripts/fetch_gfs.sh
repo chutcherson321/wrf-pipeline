@@ -3,6 +3,7 @@
 # Usage: fetch_gfs.sh CYCLE(YYYYMMDDHH) HOURS DEST_DIR
 # Files: f000..fHHH at 6-hour interval, per the coworker's input spec.
 set -euo pipefail
+. "$(dirname "$0")/lib_wait.sh"
 
 CYCLE="$1"; HOURS="$2"; DEST="$3"
 DATE="${CYCLE:0:8}"; HH="${CYCLE:8:2}"
@@ -14,6 +15,7 @@ for ((f=0; f<=HOURS; f+=6)); do
   OUT="$DEST/gfs.t${HH}z.pgrb2.0p25.f${FFF}"
   if [ -s "$OUT" ]; then echo "have $OUT"; continue; fi
   echo "fetching s3://noaa-gfs-bdp-pds/$KEY"
+  wait_for_s3 "s3://noaa-gfs-bdp-pds/$KEY" || true
   aws s3 cp --no-sign-request --region us-east-1 --only-show-errors \
     "s3://noaa-gfs-bdp-pds/$KEY" "$OUT"
 done

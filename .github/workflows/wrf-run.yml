@@ -48,7 +48,9 @@ env:
 jobs:
   prep:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Headroom for lib_wait.sh: up to 45 min waiting on a late upstream step,
+    # plus the downloads and WPS+real for the full span.
+    timeout-minutes: 180
     outputs:
       site: ${{ steps.params.outputs.site }}
       forcing: ${{ steps.params.outputs.forcing }}

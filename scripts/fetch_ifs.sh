@@ -9,6 +9,7 @@
 # Only 00z/12z cycles carry the long 'oper' stream (06z/18z is short 'scda').
 # Usage: fetch_ifs.sh CYCLE(YYYYMMDDHH) HOURS DEST_DIR
 set -euo pipefail
+. "$(dirname "$0")/lib_wait.sh"
 
 command -v grib_copy >/dev/null || {
   echo "eccodes tools required (apt-get install -y libeccodes-tools)" >&2; exit 1; }
@@ -35,8 +36,10 @@ for ((f=0; f<=HOURS; f+=6)); do
   RAW="$DEST/raw.${NAME}"
   URL="https://data.ecmwf.int/forecasts/${DATE}/${HH}z/ifs/0p25/oper/${NAME}"
   echo "fetching $URL"
+  # Wait for the step rather than failing on it: see scripts/lib_wait.sh.
+  wait_for_http "$URL" || true
   if ! curl -sfL --retry 4 --retry-delay 10 --max-time 600 "$URL" -o "$RAW"; then
-    echo "  origin failed, trying AWS mirror"
+    echo "  origin failed, trying AWS mirror (lags the origin by hours)"
     aws s3 cp --no-sign-request --region eu-central-1 --only-show-errors \
       "s3://ecmwf-forecasts/${DATE}/${HH}z/ifs/0p25/oper/${NAME}" "$RAW"
   fi
