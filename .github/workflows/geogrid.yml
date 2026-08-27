@@ -11,7 +11,7 @@ on:
     inputs:
       site:
         description: Site in the private config repo
-        default: teahupoo
+        default: cloudbreak
       add_nest_span_cells:
         description: >-
           Add an inner nest covering this many parent cells before running

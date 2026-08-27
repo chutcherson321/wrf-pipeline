@@ -79,7 +79,7 @@ database. The **Build geo_em domains** workflow is the one-off counterpart:
 run it only when a site's domains change.
 
     Actions -> Build geo_em domains -> Run workflow
-      site                 teahupoo
+      site                 cloudbreak
       add_nest_span_cells  60          # blank to use the site namelist as-is
       nest_ratio           3
       geog                 high_res_mandatory
@@ -96,8 +96,8 @@ anything with an unexpected number of entries is left alone and warned about.
 
 Run it with `--dry-run` locally first to see the geometry:
 
-    python3 scripts/add_nest.py --wps sites/teahupoo/namelist.wps \
-        --input sites/teahupoo/namelist.input --span-cells 60 --dry-run
+    python3 scripts/add_nest.py --wps sites/cloudbreak/namelist.wps \
+        --input sites/cloudbreak/namelist.input --span-cells 60 --dry-run
 
 The workflow downloads WPS_GEOG (`high_res_mandatory`, 2.8 GB, cached
 between runs), runs `geogrid.exe` in the same `dtcenter/wps_wrf` container
@@ -108,7 +108,7 @@ artifacts on a public repo are world-downloadable.
 
 Then adopt them in the private config repo:
 
-    gh release download geo-em-teahupoo -R <config-repo> -D sites/teahupoo --clobber
+    gh release download geo-em-cloudbreak -R <config-repo> -D sites/cloudbreak --clobber
 
 Take all three `geo_em` files as a set, not just the new one — they are
 built together from one WPS_GEOG version, and mixing vintages across domains
