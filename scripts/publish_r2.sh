@@ -21,6 +21,13 @@ NOW=$(date +%s)
 RATE_STATE=".publish_rate_state"
 PREV_T=0; PREV_FH=0
 if [ -f "$RATE_STATE" ]; then read -r PREV_T PREV_FH < "$RATE_STATE" || true; fi
+# Trust nothing from that file. A truncated or empty field would make the
+# arithmetic comparisons below fail, and under `set -e` that aborts the publish
+# -- i.e. one bad state file would silently stop publishing for the rest of the
+# run. Anything not a plain integer pair resets to "no previous point".
+case "${PREV_T}_${PREV_FH}" in
+  *[!0-9_]*|_*|*_) PREV_T=0; PREV_FH=0 ;;
+esac
 BUDGET="${WRF_BUDGET_MIN:-280}"
 MODEL="wrf-$FORCING"
 EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
