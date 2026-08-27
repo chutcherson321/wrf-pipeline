@@ -229,6 +229,10 @@ jobs:
     env:
       ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
       SITE: ${{ needs.prep.outputs.site }}
+      CYCLE: ${{ needs.prep.outputs.cycle }}
+      # Repo variable INNER_NEST_HOURS: run the innermost nest only this far
+      # into the forecast (0 = off, every domain runs the full length).
+      INNER_NEST_HOURS: ${{ vars.INNER_NEST_HOURS || 0 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -264,8 +268,14 @@ jobs:
               exit 0
             fi
             TS=$(cat run_dir/wrf/RESTART_TS)
+            NEST_ARGS=""
+            if [ "${INNER_NEST_HOURS:-0}" -gt 0 ]; then
+              # CYCLE is YYYYMMDDHH; segment_namelist wants YYYY-MM-DD_HH:MM:SS
+              START="${CYCLE:0:4}-${CYCLE:4:2}-${CYCLE:6:2}_${CYCLE:8:2}:00:00"
+              NEST_ARGS="--cycle-start $START --nest-hours $INNER_NEST_HOURS"
+            fi
             python3 scripts/segment_namelist.py \
-              --namelist run_dir/namelist.input --restart-time "$TS"
+              --namelist run_dir/namelist.input --restart-time "$TS" $NEST_ARGS
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
@@ -295,7 +305,9 @@ jobs:
           else
             TS=$(../../scripts/pick_restart.sh .)
             echo "$TS" > RESTART_TS
-            tar -cf ../../state.tar RESTART_TS "wrfrst_d01_$TS" "wrfrst_d02_$TS"
+            # Tar whatever domains wrote a restart: a short-range inner nest
+            # stops early, so the set shrinks partway through the forecast.
+            tar -cf ../../state.tar RESTART_TS wrfrst_d0?_"$TS"
           fi
           cd ../..
           scripts/crypt.sh enc state.tar state.tar.enc
