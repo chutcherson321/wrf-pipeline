@@ -1,0 +1,128 @@
+# Build a site's geo_em.d0*.nc terrain files.
+#
+# The forecast workflow skips geogrid so it never carries the WPS_GEOG
+# dependency. This is the one-off counterpart: run it only when a site's
+# domains change -- adding an inner nest, moving or resizing a domain --
+# then commit the result back to the private config repo.
+name: Build geo_em domains
+
+on:
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site in the private config repo
+        default: teahupoo
+      add_nest_span_cells:
+        description: >-
+          Add an inner nest covering this many parent cells before running
+          geogrid (blank = use the site namelist as-is)
+        default: ""
+      nest_ratio:
+        description: parent_grid_ratio for the added nest
+        default: "3"
+      geog:
+        description: WPS_GEOG dataset
+        type: choice
+        options: [high_res_mandatory, low_res_mandatory]
+        default: high_res_mandatory
+      publish:
+        description: Upload geo_em files to the private config repo as a release
+        type: boolean
+        default: true
+
+env:
+  CONFIG_REPO: chutcherson321/wavetrak-wrf
+  GEOG_URL_BASE: https://www2.mmm.ucar.edu/wrf/src/wps_files
+
+jobs:
+  geogrid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+      ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+      SITE: ${{ inputs.site }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Fetch site config
+        run: |
+          curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
+          test -f "sites/$SITE/namelist.wps" || { echo "no namelist.wps for $SITE" >&2; exit 1; }
+          mkdir -p run_dir
+          cp "sites/$SITE/namelist.wps" "sites/$SITE/namelist.input" run_dir/
+
+      - name: Add inner nest
+        if: inputs.add_nest_span_cells != ''
+        run: |
+          python3 scripts/add_nest.py \
+            --wps run_dir/namelist.wps \
+            --input run_dir/namelist.input \
+            --span-cells "${{ inputs.add_nest_span_cells }}" \
+            --ratio "${{ inputs.nest_ratio }}"
+
+      - name: Cache WPS_GEOG tarball
+        id: geogcache
+        uses: actions/cache@v4
+        with:
+          path: geog.tar.gz
+          key: wps-geog-${{ inputs.geog }}
+
+      - name: Download WPS_GEOG
+        if: steps.geogcache.outputs.cache-hit != 'true'
+        run: |
+          curl -fSL --retry 3 -o geog.tar.gz \
+            "$GEOG_URL_BASE/geog_${{ inputs.geog }}.tar.gz"
+          ls -lh geog.tar.gz
+
+      - name: Extract WPS_GEOG
+        run: |
+          mkdir -p geog && tar -xzf geog.tar.gz -C geog --strip-components=1
+          du -sh geog; ls geog | head -30
+          df -h /
+
+      - name: Pull WPS container
+        run: docker pull dtcenter/wps_wrf
+
+      - name: Run geogrid
+        run: scripts/run_geogrid.sh "$SITE" run_dir geog
+
+      - name: Summarise domains
+        run: |
+          docker run --rm -v "$PWD/run_dir:/d" dtcenter/wps_wrf bash -c '
+            for f in /d/geo_em.d0*.nc; do
+              echo "--- $(basename $f)"
+              ncdump -h "$f" | grep -E "west_east =|south_north =|:DX =|:DY =" | tr -d "\t"
+            done'
+
+      - name: Upload to private config repo
+        if: inputs.publish
+        run: |
+          TAG="geo-em-$SITE"
+          gh release view "$TAG" -R "$CONFIG_REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$CONFIG_REPO" \
+                 --title "geo_em domains: $SITE" \
+                 --notes "Built by the public wrf-pipeline geogrid workflow."
+          gh release upload "$TAG" -R "$CONFIG_REPO" --clobber \
+            run_dir/geo_em.d0*.nc run_dir/namelist.wps run_dir/namelist.input
+          echo "::notice::Fetch and commit with:"
+          echo "  gh release download $TAG -R $CONFIG_REPO -D sites/$SITE --clobber"
+
+      - name: Upload encrypted artifact
+        run: |
+          tar -cf geo_em.tar -C run_dir $(cd run_dir && ls geo_em.d0*.nc namelist.*)
+          scripts/crypt.sh enc geo_em.tar geo_em.tar.enc
+          ls -lh geo_em.tar.enc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geo_em-${{ inputs.site }}
+          path: geo_em.tar.enc
+          retention-days: 14

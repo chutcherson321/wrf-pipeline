@@ -71,16 +71,48 @@ Two supporting pieces follow from that:
 - The segment state tarball carries `wrfrst_d0?_$TS`, so whichever domains
   are still active are handed to the next segment.
 
-Two things this repo cannot supply, because they live in the private site
-config:
+### Building the domain file
 
-- `geo_em.d03.nc`. Geogrid is skipped here by design, so the domain file has
-  to be produced by a WPS `geogrid.exe` run against the site's WPS_GEOG
-  data and published alongside the existing `geo_em.d0[12].nc`.
-- The site namelist needs `max_dom = 3` plus d03 geometry (`i_parent_start`,
-  `j_parent_start`, `e_we`, `e_sn`, `parent_grid_ratio = 3`,
-  `parent_time_step_ratio = 3`) and `d03_km` / `d03_hours` in
-  `wrf_domain` for the manifest label.
+`geo_em.d03.nc` has to exist before any of this runs, and the forecast
+pipeline skips geogrid on purpose so it never carries the WPS_GEOG terrain
+database. The **Build geo_em domains** workflow is the one-off counterpart:
+run it only when a site's domains change.
+
+    Actions -> Build geo_em domains -> Run workflow
+      site                 teahupoo
+      add_nest_span_cells  60          # blank to use the site namelist as-is
+      nest_ratio           3
+      geog                 high_res_mandatory
+      publish              true
+
+With `add_nest_span_cells` set it runs `scripts/add_nest.py` first, which is
+the part that is annoying by hand: WRF wants `(e_we - 1) % parent_grid_ratio
+== 0`, the child must sit wholly inside its parent with a buffer, and every
+per-domain list in both namelists has to grow by one entry in step. The nest
+is centred on its parent and covers `--span-cells` of it, so a 3 km d02 with
+`--span-cells 60 --ratio 3` gives a 1 km d03 of 181x181 points, about 180 km
+across. Other per-domain lists are extended by repeating the last value, and
+anything with an unexpected number of entries is left alone and warned about.
+
+Run it with `--dry-run` locally first to see the geometry:
+
+    python3 scripts/add_nest.py --wps sites/teahupoo/namelist.wps \
+        --input sites/teahupoo/namelist.input --span-cells 60 --dry-run
+
+The workflow downloads WPS_GEOG (`high_res_mandatory`, 2.8 GB, cached
+between runs), runs `geogrid.exe` in the same `dtcenter/wps_wrf` container
+the forecast uses, prints each domain's dimensions and `DX`, and publishes
+`geo_em.d0*.nc` plus both namelists to a `geo-em-<site>` release on the
+private config repo. It also uploads them as an encrypted artifact, since
+artifacts on a public repo are world-downloadable.
+
+Then adopt them in the private config repo:
+
+    gh release download geo-em-teahupoo -R <config-repo> -D sites/teahupoo --clobber
+
+Take all three `geo_em` files as a set, not just the new one — they are
+built together from one WPS_GEOG version, and mixing vintages across domains
+is a subtle way to get inconsistent terrain.
 
 Products (`make_wind_tiles.py`, `extract_stations.py`) still read `d02`.
 That is deliberate: d02 covers the full forecast, so charts and timeseries
