@@ -15,6 +15,12 @@ set -euo pipefail
 
 SITE="$1"; FORCING="$2"; CYCLE="$3"; GLOB="$4"; EXPECT="${5:-0}"
 SINCE="${6:-0}"          # epoch seconds when integration began, for the ETA
+NOW=$(date +%s)
+# One line, "<epoch> <maxfh>", from the previous successful publish in this job.
+# Lets the ETA use a windowed rate instead of a since-start average.
+RATE_STATE=".publish_rate_state"
+PREV_T=0; PREV_FH=0
+if [ -f "$RATE_STATE" ]; then read -r PREV_T PREV_FH < "$RATE_STATE" || true; fi
 BUDGET="${WRF_BUDGET_MIN:-280}"
 MODEL="wrf-$FORCING"
 EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -66,11 +72,22 @@ if [ "$EXPECT" -gt 0 ] && [ "$NEW_MAX" -lt "$EXPECT" ]; then
   # MEASURE the integration rate rather than assume one. A hardcoded 26 min per
   # 12 forecast hours was ~2x out on the first live run (the runner did 36 h in
   # ~40 min), which the page showed as "rest ETA 288 min" against a real ~145.
+  #
+  # Measured over the LAST INTERVAL, not since the start, because the rate is
+  # not constant within a run. With a short-range inner nest (INNER_NEST_HOURS)
+  # the early hours carry a ~27x-per-3:1-ratio domain and integrate far slower;
+  # once d03 stops, the run speeds up. An average since start stays poisoned by
+  # those slow hours long after they end, so the ETA would read pessimistic for
+  # most of the run. A windowed rate re-converges within one block.
   REMAIN=$(( EXPECT - NEW_MAX ))
-  ELAPSED_MIN=0
-  if [ "$SINCE" -gt 0 ]; then ELAPSED_MIN=$(( ($(date +%s) - SINCE) / 60 )); fi
-  if [ "$ELAPSED_MIN" -gt 0 ] && [ "$NEW_MAX" -gt 0 ]; then
-    INTEG=$(( REMAIN * ELAPSED_MIN / NEW_MAX ))
+  RATE_MIN=0; RATE_FH=0
+  if [ "$PREV_T" -gt 0 ] && [ "$NEW_MAX" -gt "$PREV_FH" ]; then
+    RATE_MIN=$(( (NOW - PREV_T) / 60 )); RATE_FH=$(( NEW_MAX - PREV_FH ))
+  elif [ "$SINCE" -gt 0 ] && [ "$NEW_MAX" -gt 0 ]; then
+    RATE_MIN=$(( (NOW - SINCE) / 60 )); RATE_FH=$NEW_MAX   # only one point so far
+  fi
+  if [ "$RATE_MIN" -gt 0 ] && [ "$RATE_FH" -gt 0 ]; then
+    INTEG=$(( REMAIN * RATE_MIN / RATE_FH ))
   else
     INTEG=$(( REMAIN * 26 / 12 ))   # nothing to measure yet on the first tick
   fi
@@ -91,4 +108,5 @@ python scripts/make_manifest.py --site "$SITE" --listing listing.json \
   --out manifest.json
 $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
   --content-type application/json --only-show-errors
+echo "$NOW $NEW_MAX" > "$RATE_STATE"
 echo "publish_r2: done (+${NEW_MAX}h)"
