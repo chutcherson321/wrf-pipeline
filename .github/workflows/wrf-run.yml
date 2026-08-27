@@ -2,12 +2,12 @@ name: wrf-run
 
 on:
   schedule:
-    # GFS 00z/12z: final f168 boundary file lands ~3h40m after cycle time.
-    - cron: "15 5 * * *"
-    - cron: "15 17 * * *"
-    # IFS 00z/12z: open data publishes ~7h35m after cycle time.
-    - cron: "45 8 * * *"
-    - cron: "45 20 * * *"
+    # A tick every two hours rather than four fixed shots. GitHub delays
+    # scheduled events under load and DROPS them when the delay grows — on
+    # 2026-08-27 both of the day's crons never fired and the 00z cycle was
+    # simply lost. The `plan` job decides what is actually missing, so most
+    # ticks cost ~20 s and a dropped tick self-heals two hours later.
+    - cron: "15 */2 * * *"
   workflow_dispatch:
     inputs:
       site:
@@ -45,8 +45,70 @@ permissions:
 env:
   CONFIG_REPO: chutcherson321/wavetrak-wrf
 
+# One run at a time. A tick that lands mid-run queues instead of starting a
+# duplicate, and by the time it starts its target cycle is usually published,
+# so it exits in seconds.
+concurrency:
+  group: wrf-run
+  cancel-in-progress: false
+
 jobs:
+  # Cheap decision job: what is missing that we can actually run right now?
+  # A manual dispatch always wins; a scheduled tick proceeds only when a cycle
+  # is genuinely absent AND its forcing data is already on the server.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      site: ${{ steps.decide.outputs.site }}
+      forcing: ${{ steps.decide.outputs.forcing }}
+      cycle: ${{ steps.decide.outputs.cycle }}
+      hours: ${{ steps.decide.outputs.hours }}
+    env:
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide
+        id: decide
+        run: |
+          chmod +x scripts/*.sh
+          SITE="${{ inputs.site || 'cloudbreak' }}"
+          HOURS="${{ inputs.hours || '168' }}"
+          { echo "site=$SITE"; echo "hours=$HOURS"; } >> "$GITHUB_OUTPUT"
+
+          # An explicit dispatch is an instruction, not a suggestion.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FORCING="${{ inputs.forcing || 'gfs' }}"
+            CYCLE="${{ inputs.cycle || 'auto' }}"
+            if [ "$CYCLE" = "auto" ]; then
+              if [ "$FORCING" = "ifs" ]; then CYCLE=$(scripts/latest_ifs_cycle.sh "$HOURS")
+              else CYCLE=$(scripts/latest_cycle.sh "$HOURS"); fi
+            fi
+            echo "dispatch: $FORCING $CYCLE"
+            { echo "run=true"; echo "forcing=$FORCING"; echo "cycle=$CYCLE"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Scheduled tick: GFS first (it publishes hours earlier), then IFS.
+          for F in gfs ifs; do
+            if [ "$F" = "ifs" ]; then C=$(scripts/latest_ifs_cycle.sh "$HOURS" 2>/dev/null || true)
+            else C=$(scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true); fi
+            if [ -z "$C" ]; then echo "$F: no cycle with complete data yet"; continue; fi
+            if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$C"; then
+              echo "$F $C: already published"; continue
+            fi
+            echo "$F $C: MISSING — running it"
+            { echo "run=true"; echo "forcing=$F"; echo "cycle=$C"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          done
+          echo "nothing to do"
+          echo "run=false" >> "$GITHUB_OUTPUT"
+
   prep:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Headroom for lib_wait.sh: up to 45 min waiting on a late upstream step,
     # plus the downloads and WPS+real for the full span.
@@ -67,21 +129,14 @@ jobs:
       - name: Resolve run parameters
         id: params
         run: |
-          FORCING="${{ inputs.forcing }}"
-          if [ -z "$FORCING" ]; then
-            case "${{ github.event.schedule }}" in
-              "45 8 * * *"|"45 20 * * *") FORCING=ifs ;;
-              *) FORCING=gfs ;;
-            esac
-          fi
           {
-            echo "site=${{ inputs.site || 'cloudbreak' }}"
-            echo "forcing=$FORCING"
-            echo "hours=${{ inputs.hours || '168' }}"
+            echo "site=${{ needs.plan.outputs.site }}"
+            echo "forcing=${{ needs.plan.outputs.forcing }}"
+            echo "hours=${{ needs.plan.outputs.hours }}"
             echo "budget=${{ inputs.budget_min || '280' }}"
             echo "upload_wrfout=${{ inputs.upload_wrfout == '' && 'true' || inputs.upload_wrfout }}"
           } >> "$GITHUB_OUTPUT"
-          echo "forcing=$FORCING site=${{ inputs.site || 'cloudbreak' }} hours=${{ inputs.hours || '168' }}"
+          echo "planned: ${{ needs.plan.outputs.forcing }} ${{ needs.plan.outputs.cycle }}"
 
       - name: Fetch site configs (private repo)
         run: |
@@ -96,21 +151,12 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
           df -h /
 
-      - name: Resolve cycle
+      - name: Take the planned cycle
         id: cycle
         run: |
           chmod +x scripts/*.sh
-          CYCLE="${{ inputs.cycle || 'auto' }}"
-          HOURS="${{ steps.params.outputs.hours }}"
-          if [ "$CYCLE" = "auto" ]; then
-            if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
-              CYCLE=$(scripts/latest_ifs_cycle.sh "$HOURS")
-            else
-              CYCLE=$(scripts/latest_cycle.sh "$HOURS")
-            fi
-          fi
-          echo "cycle=$CYCLE" >> "$GITHUB_OUTPUT"
-          echo "Resolved ${{ steps.params.outputs.forcing }} cycle: $CYCLE"
+          echo "cycle=${{ needs.plan.outputs.cycle }}" >> "$GITHUB_OUTPUT"
+          echo "cycle ${{ needs.plan.outputs.cycle }} (${{ steps.params.outputs.forcing }})"
 
       - name: Download forcing data
         run: |
