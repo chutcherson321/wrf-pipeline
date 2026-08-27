@@ -18,12 +18,26 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
+def max_dom(text: str) -> int:
+    """Domain count declared by the namelist, so per-domain lines are rebuilt
+    at the right width. A site running a short-range inner nest has three."""
+    m = re.search(r"^\s*max_dom\s*=\s*(\d+)", text, flags=re.M)
+    if not m:
+        raise SystemExit("namelist: no 'max_dom' line")
+    return int(m.group(1))
+
+
+def per_dom(key, value, n):
+    return f" {key:<22} = " + " ".join([f"{value}," for _ in range(n)])
+
+
 def rewrite_wps(text: str, start: datetime, end: datetime, forcing: str) -> str:
     fmt = "%Y-%m-%d_%H:%M:%S"
-    text = re.sub(r"start_date\s*=.*",
-                  f" start_date       = '{start:{fmt}}','{start:{fmt}}',", text)
-    text = re.sub(r"end_date\s*=.*",
-                  f" end_date         = '{end:{fmt}}','{end:{fmt}}',", text)
+    n = max_dom(text)
+    text = re.sub(r"^\s*start_date\s*=.*$",
+                  per_dom("start_date", f"'{start:{fmt}}'", n), text, flags=re.M)
+    text = re.sub(r"^\s*end_date\s*=.*$",
+                  per_dom("end_date", f"'{end:{fmt}}'", n), text, flags=re.M)
     if forcing == "ifs":
         # IFS atmosphere + GFS soil/landmask (see vtables/Vtable.IFS).
         text = re.sub(r"fg_name\s*=.*", " fg_name = 'FILE','SOIL',", text)
@@ -43,24 +57,25 @@ RESTART_INTERVAL_MIN = 720
 def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
                   forcing: str, restart_interval: int) -> str:
     days, rem = divmod(hours, 24)
+    n = max_dom(text)
     subs = {
         "num_metgrid_levels": f" num_metgrid_levels     = {METGRID_LEVELS[forcing]},",
         "restart_interval": f" restart_interval       = {restart_interval},",
         "run_days": f" run_days               = {days},",
         "run_hours": f" run_hours              = {rem},",
-        "start_year": f" start_year             = {start.year}, {start.year},",
-        "start_month": f" start_month            = {start.month:02d},   {start.month:02d},",
-        "start_day": f" start_day              = {start.day:02d},   {start.day:02d},",
-        "start_hour": f" start_hour             = {start.hour:02d},   {start.hour:02d},",
-        "end_year": f" end_year               = {end.year}, {end.year},",
-        "end_month": f" end_month              = {end.month:02d},   {end.month:02d},",
-        "end_day": f" end_day                = {end.day:02d},   {end.day:02d},",
-        "end_hour": f" end_hour               = {end.hour:02d},   {end.hour:02d},",
+        "start_year": per_dom("start_year", start.year, n),
+        "start_month": per_dom("start_month", f"{start.month:02d}", n),
+        "start_day": per_dom("start_day", f"{start.day:02d}", n),
+        "start_hour": per_dom("start_hour", f"{start.hour:02d}", n),
+        "end_year": per_dom("end_year", end.year, n),
+        "end_month": per_dom("end_month", f"{end.month:02d}", n),
+        "end_day": per_dom("end_day", f"{end.day:02d}", n),
+        "end_hour": per_dom("end_hour", f"{end.hour:02d}", n),
     }
     for key, line in subs.items():
-        text, n = re.subn(rf"^\s*{key}\s*=.*$", line, text, count=1, flags=re.M)
-        if n != 1:
-            raise SystemExit(f"namelist.input: expected exactly one '{key}' line, found {n}")
+        text, hits = re.subn(rf"^\s*{key}\s*=.*$", line, text, count=1, flags=re.M)
+        if hits != 1:
+            raise SystemExit(f"namelist.input: expected exactly one '{key}' line, found {hits}")
     return text
 
 

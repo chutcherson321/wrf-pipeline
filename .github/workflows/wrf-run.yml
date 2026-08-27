@@ -178,8 +178,9 @@ jobs:
             --hours "${{ steps.params.outputs.hours }}" \
             --forcing "${{ steps.params.outputs.forcing }}" \
             --restart-interval "${{ inputs.restart_interval_min || '720' }}" --out run_dir
-          cp "sites/${{ steps.params.outputs.site }}/geo_em.d01.nc" \
-             "sites/${{ steps.params.outputs.site }}/geo_em.d02.nc" run_dir/
+          # Every domain the site config ships, so a third nest needs no change here.
+          cp "sites/${{ steps.params.outputs.site }}"/geo_em.d0?.nc run_dir/
+          echo "domains: $(ls run_dir/geo_em.d0?.nc | wc -l)"
           if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
             cp vtables/Vtable.IFS run_dir/
           fi
