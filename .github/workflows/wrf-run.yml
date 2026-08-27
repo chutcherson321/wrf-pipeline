@@ -281,6 +281,7 @@ jobs:
       # artifacts into later segments would lift this, at ~2 GB per segment.
       - name: Set up extraction environment
         if: matrix.seg == 1 && steps.resume.outputs.skip != 'true'
+        continue-on-error: true
         uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: extract
@@ -306,12 +307,15 @@ jobs:
           # only copy on this runner is inside the encrypted input bundle.
           if [ "$SEG" = "1" ] && [ -n "${R2_ACCOUNT_ID:-}" ] \
              && [ -f run_dir/sites.json ]; then
-            micromamba activate extract
-            cp run_dir/sites.json .
-            scripts/publish_loop.sh "$SITE" "$FORCING" "$CYCLE" \
-              run_dir PUBLISH_STOP "$HOURS" &
-            LOOP=$!
-            echo "partial publisher running as pid $LOOP"
+            if micromamba activate extract 2>/dev/null; then
+              cp run_dir/sites.json .
+              scripts/publish_loop.sh "$SITE" "$FORCING" "$CYCLE" \
+                run_dir PUBLISH_STOP "$HOURS" &
+              LOOP=$!
+              echo "partial publisher running as pid $LOOP"
+            else
+              echo "no partial publishing: extract env unavailable"
+            fi
           elif [ "$SEG" = "1" ]; then
             echo "no partial publishing: R2 secrets or sites.json missing"
           fi
