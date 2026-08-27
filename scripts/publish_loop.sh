@@ -17,6 +17,8 @@ SITE="$1"; FORCING="$2"; CYCLE="$3"; RUN_DIR="$4"; STOP="$5"; EXPECT="${6:-0}"
 INTERVAL="${PUBLISH_POLL_SEC:-120}"
 PUBLISHER="${PUBLISHER:-scripts/publish_r2.sh}"
 STAGE="partial_frames"
+# Integration started when this loop did; publish_r2.sh derives the rate from it.
+SINCE=$(date +%s)
 LIST=".publish_loop_files"
 last_count=0
 
@@ -38,7 +40,7 @@ while [ ! -f "$STOP" ]; do
 
   echo "publish_loop: $closed closed file(s) — publishing"
   if nice -n 10 "$PUBLISHER" "$SITE" "$FORCING" "$CYCLE" \
-       "$STAGE/wrfout_d02_*" "$EXPECT"; then
+       "$STAGE/wrfout_d02_*" "$EXPECT" "$SINCE"; then
     last_count="$closed"
   else
     echo "publish_loop: publish failed, will retry next tick" >&2

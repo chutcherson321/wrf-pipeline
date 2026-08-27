@@ -3,7 +3,7 @@
 # file, the wind value-tiles, and a refreshed manifest. Safe to call repeatedly
 # while a run is still integrating — that is the point.
 #
-# Usage: publish_r2.sh SITE FORCING CYCLE WRFOUT_GLOB [EXPECT_HOURS]
+# Usage: publish_r2.sh SITE FORCING CYCLE WRFOUT_GLOB [EXPECT_HOURS] [SINCE_EPOCH]
 # Needs: R2_ACCOUNT_ID, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and an
 #        activated python env carrying wrf-python.
 #
@@ -14,6 +14,8 @@
 set -euo pipefail
 
 SITE="$1"; FORCING="$2"; CYCLE="$3"; GLOB="$4"; EXPECT="${5:-0}"
+SINCE="${6:-0}"          # epoch seconds when integration began, for the ETA
+BUDGET="${WRF_BUDGET_MIN:-280}"
 MODEL="wrf-$FORCING"
 EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 BUCKET="wavetrak-frames"
@@ -61,8 +63,22 @@ $S3 cp tiles_out "s3://$BUCKET/wrf/$SITE/tiles/$MODEL/$CYCLE" \
 # object in R2, not an argument, so the other forcing's lane can rebuild this
 # same manifest without erasing it.
 if [ "$EXPECT" -gt 0 ] && [ "$NEW_MAX" -lt "$EXPECT" ]; then
-  # ~26 min of wall clock per 12 forecast hours on a 4-vCPU runner.
-  ETA=$(( (EXPECT - NEW_MAX) * 26 / 12 ))
+  # MEASURE the integration rate rather than assume one. A hardcoded 26 min per
+  # 12 forecast hours was ~2x out on the first live run (the runner did 36 h in
+  # ~40 min), which the page showed as "rest ETA 288 min" against a real ~145.
+  REMAIN=$(( EXPECT - NEW_MAX ))
+  ELAPSED_MIN=0
+  if [ "$SINCE" -gt 0 ]; then ELAPSED_MIN=$(( ($(date +%s) - SINCE) / 60 )); fi
+  if [ "$ELAPSED_MIN" -gt 0 ] && [ "$NEW_MAX" -gt 0 ]; then
+    INTEG=$(( REMAIN * ELAPSED_MIN / NEW_MAX ))
+  else
+    INTEG=$(( REMAIN * 26 / 12 ))   # nothing to measure yet on the first tick
+  fi
+  # Integration time is not the whole wait: each remaining segment costs a
+  # fresh runner (queue, docker pull, artifact download, restart) before it
+  # integrates anything. Measured around 12 min and charged separately.
+  SEGS=$(( INTEG / BUDGET ))
+  ETA=$(( INTEG + SEGS * 12 ))
   echo "publish_r2: partial, ~${ETA} min of forecast left to run"
   scripts/partial_marker.sh set "$SITE" "$MODEL" "$CYCLE" "$NEW_MAX" "$ETA"
 else
