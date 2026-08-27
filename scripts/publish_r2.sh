@@ -56,20 +56,23 @@ $S3 cp "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
 $S3 cp tiles_out "s3://$BUCKET/wrf/$SITE/tiles/$MODEL/$CYCLE" \
   --recursive --only-show-errors
 
-# Manifest: mark this member partial while it is still short of the target, so
-# the page shows "+NNh · rest ETA" instead of implying a finished run.
-PARTIAL_ARG=()
+# Mark this member partial while it is still short of the target, so the page
+# shows "+NNh · rest ETA" instead of implying a finished run. The mark is an
+# object in R2, not an argument, so the other forcing's lane can rebuild this
+# same manifest without erasing it.
 if [ "$EXPECT" -gt 0 ] && [ "$NEW_MAX" -lt "$EXPECT" ]; then
   # ~26 min of wall clock per 12 forecast hours on a 4-vCPU runner.
   ETA=$(( (EXPECT - NEW_MAX) * 26 / 12 ))
-  PARTIAL_ARG=(--partial "$MODEL:$CYCLE:$NEW_MAX:$ETA")
   echo "publish_r2: partial, ~${ETA} min of forecast left to run"
+  scripts/partial_marker.sh set "$SITE" "$MODEL" "$CYCLE" "$NEW_MAX" "$ETA"
+else
+  scripts/partial_marker.sh clear "$SITE" "$MODEL" "$CYCLE"
 fi
 
 $S3API list-objects-v2 --bucket "$BUCKET" --prefix "wrf/$SITE/" > listing.json
 python scripts/make_manifest.py --site "$SITE" --listing listing.json \
   --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" \
-  --out manifest.json "${PARTIAL_ARG[@]+"${PARTIAL_ARG[@]}"}"
+  --out manifest.json
 $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
   --content-type application/json --only-show-errors
 echo "publish_r2: done (+${NEW_MAX}h)"

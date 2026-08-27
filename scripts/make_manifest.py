@@ -60,19 +60,33 @@ def main():
                          "implying a completed run")
     args = ap.parse_args()
 
+    listed = json.loads(Path(args.listing).read_text())
+    pat = re.compile(rf"^wrf/{re.escape(args.site)}/([A-Za-z0-9_\-]+)/(\d{{10}})\.json$")
+    # Zero-byte markers written by publish_r2.sh while a run is still
+    # integrating. Reading them from the listing rather than a CLI flag is what
+    # lets the GFS and IFS lanes rebuild this manifest concurrently without
+    # erasing each other's state (see scripts/partial_marker.sh).
+    mpat = re.compile(
+        rf"^wrf/{re.escape(args.site)}/([A-Za-z0-9_\-]+)/(\d{{10}})\.partial-(\d+)-(\d+)$")
+    found: dict[str, set[str]] = {}
     partials = {}
+    for obj in listed.get("Contents", []):
+        key = obj.get("Key", "")
+        m = pat.match(key)
+        if m:
+            found.setdefault(m.group(1), set()).add(m.group(2))
+            continue
+        mm = mpat.match(key)
+        if mm:
+            partials[(mm.group(1), mm.group(2))] = {
+                "status": "partial", "maxfh": int(mm.group(3)),
+                "eta_min": int(mm.group(4))}
+
+    # An explicit flag still wins, for local runs and one-off repairs.
     for spec in args.partial:
         mid, cyc, maxfh, eta = spec.split(":")
         partials[(mid, cyc)] = {"status": "partial", "maxfh": int(maxfh),
                                 "eta_min": int(eta)}
-
-    listed = json.loads(Path(args.listing).read_text())
-    pat = re.compile(rf"^wrf/{re.escape(args.site)}/([A-Za-z0-9_\-]+)/(\d{{10}})\.json$")
-    found: dict[str, set[str]] = {}
-    for obj in listed.get("Contents", []):
-        m = pat.match(obj.get("Key", ""))
-        if m:
-            found.setdefault(m.group(1), set()).add(m.group(2))
     if not found:
         raise SystemExit("no wrf/{site}/{model}/{cycle}.json objects in listing")
 

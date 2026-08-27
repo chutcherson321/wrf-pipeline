@@ -1,0 +1,437 @@
+name: wrf-forcing
+
+# One forcing's full chain: WPS+real, four chained WRF segments, publish.
+# Called once per forcing by wrf-run.yml so GFS and IFS integrate in PARALLEL.
+# They used to share a single lane, which needed 26 h of wall clock per day to
+# cover two cycles x two forcings — more than a day contains, so the pipeline
+# slipped further behind every day and was ~29 h stale by 2026-08-27.
+#
+# Every artifact name here carries the forcing: both lanes live in one workflow
+# run and therefore share one artifact namespace.
+on:
+  workflow_call:
+    inputs:
+      site:
+        type: string
+        required: true
+      forcing:
+        type: string
+        required: true
+      cycle:
+        type: string
+        required: true
+      hours:
+        type: string
+        default: "168"
+      budget_min:
+        type: string
+        default: "280"
+      restart_interval_min:
+        type: string
+        default: "720"
+      upload_wrfout:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CONFIG_REPO: chutcherson321/wavetrak-wrf
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    # Headroom for lib_wait.sh: up to 45 min waiting on a late upstream step,
+    # plus the downloads and WPS+real for the full span.
+    timeout-minutes: 180
+    outputs:
+      site: ${{ steps.params.outputs.site }}
+      forcing: ${{ steps.params.outputs.forcing }}
+      hours: ${{ steps.params.outputs.hours }}
+      budget: ${{ steps.params.outputs.budget }}
+      upload_wrfout: ${{ steps.params.outputs.upload_wrfout }}
+      cycle: ${{ steps.cycle.outputs.cycle }}
+    env:
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+      ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve run parameters
+        id: params
+        run: |
+          {
+            echo "site=${{ inputs.site }}"
+            echo "forcing=${{ inputs.forcing }}"
+            echo "hours=${{ inputs.hours }}"
+            echo "budget=${{ inputs.budget_min }}"
+            echo "upload_wrfout=${{ inputs.upload_wrfout }}"
+          } >> "$GITHUB_OUTPUT"
+          echo "planned: ${{ inputs.forcing }} ${{ inputs.cycle }}"
+
+      - name: Fetch site configs (private repo)
+        run: |
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
+          test -f "sites/${{ steps.params.outputs.site }}/namelist.input" \
+            || { echo "unknown site: ${{ steps.params.outputs.site }}"; exit 1; }
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Take the planned cycle
+        id: cycle
+        run: |
+          chmod +x scripts/*.sh
+          echo "cycle=${{ inputs.cycle }}" >> "$GITHUB_OUTPUT"
+          echo "cycle ${{ inputs.cycle }} (${{ steps.params.outputs.forcing }})"
+
+      - name: Download forcing data
+        run: |
+          CYCLE="${{ steps.cycle.outputs.cycle }}"
+          HOURS="${{ steps.params.outputs.hours }}"
+          if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
+            # eccodes repacks the CCSDS-compressed open data for WPS's g2lib
+            sudo apt-get -qq update && sudo apt-get -qq install -y libeccodes-tools
+            scripts/fetch_ifs.sh "$CYCLE" "$HOURS" run_dir
+            scripts/fetch_gfs_soil.sh "$CYCLE" "$HOURS" run_dir
+          else
+            scripts/fetch_gfs.sh "$CYCLE" "$HOURS" run_dir
+          fi
+
+      - name: Stage run directory
+        run: |
+          python3 scripts/make_namelists.py --site "${{ steps.params.outputs.site }}" \
+            --cycle "${{ steps.cycle.outputs.cycle }}" \
+            --hours "${{ steps.params.outputs.hours }}" \
+            --forcing "${{ steps.params.outputs.forcing }}" \
+            --restart-interval "${{ inputs.restart_interval_min }}" --out run_dir
+          cp "sites/${{ steps.params.outputs.site }}/geo_em.d01.nc" \
+             "sites/${{ steps.params.outputs.site }}/geo_em.d02.nc" run_dir/
+          if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
+            cp vtables/Vtable.IFS run_dir/
+          fi
+
+      - name: Pull WRF container
+        run: docker pull dtcenter/wps_wrf
+
+      - name: Run WPS + real
+        env:
+          FORCING: ${{ steps.params.outputs.forcing }}
+        run: scripts/run_pipeline.sh "${{ steps.params.outputs.site }}" run_dir "$(nproc)" wps
+
+      - name: WPS logs on failure
+        if: failure()
+        run: |
+          for f in run_dir/ungrib.log run_dir/metgrid.log run_dir/wrf/rsl.error.0000; do
+            [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
+          done || true
+
+      - name: Bundle model inputs
+        run: |
+          tar -cf bundle.tar -C run_dir namelist.input \
+            wrf/wrfinput_d01 wrf/wrfinput_d02 wrf/wrfbdy_d01
+          tar -rf bundle.tar sites.json
+          scripts/crypt.sh enc bundle.tar bundle.tar.enc
+          ls -lh bundle.tar.enc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wps-bundle-${{ inputs.forcing }}
+          path: bundle.tar.enc
+          retention-days: 2
+
+  wrf:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        include:
+          - { seg: 1, prev: 0 }
+          - { seg: 2, prev: 1 }
+          - { seg: 3, prev: 2 }
+          - { seg: 4, prev: 3 }
+    env:
+      ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+      SITE: ${{ needs.prep.outputs.site }}
+      CYCLE: ${{ needs.prep.outputs.cycle }}
+      # Repo variable INNER_NEST_HOURS: run the innermost nest only this far
+      # into the forecast (0 = off, every domain runs the full length).
+      INNER_NEST_HOURS: ${{ vars.INNER_NEST_HOURS || 0 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wps-bundle-${{ inputs.forcing }}
+
+      - name: Unpack model inputs
+        run: |
+          chmod +x scripts/*.sh
+          mkdir -p run_dir
+          scripts/crypt.sh dec bundle.tar.enc bundle.tar
+          tar -xf bundle.tar -C run_dir
+
+      - name: Fetch previous segment state
+        if: matrix.seg > 1
+        uses: actions/download-artifact@v4
+        with:
+          name: state-${{ inputs.forcing }}-seg${{ matrix.prev }}
+
+      - name: Resume or skip
+        id: resume
+        run: |
+          if [ "${{ matrix.seg }}" -gt 1 ]; then
+            scripts/crypt.sh dec state.tar.enc state.tar
+            tar -xf state.tar -C run_dir/wrf
+            if [ -f run_dir/wrf/WRF_DONE ]; then
+              echo "forecast already complete — passing DONE marker through"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            TS=$(cat run_dir/wrf/RESTART_TS)
+            NEST_ARGS=""
+            if [ "${INNER_NEST_HOURS:-0}" -gt 0 ]; then
+              # CYCLE is YYYYMMDDHH; segment_namelist wants YYYY-MM-DD_HH:MM:SS
+              START="${CYCLE:0:4}-${CYCLE:4:2}-${CYCLE:6:2}_${CYCLE:8:2}:00:00"
+              NEST_ARGS="--cycle-start $START --nest-hours $INNER_NEST_HOURS"
+            fi
+            python3 scripts/segment_namelist.py \
+              --namelist run_dir/namelist.input --restart-time "$TS" $NEST_ARGS
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Pull WRF container
+        if: steps.resume.outputs.skip != 'true'
+        run: docker pull dtcenter/wps_wrf
+
+      # Only segment 1 publishes as it goes. Later segments hold just their own
+      # frames (earlier ones live in artifacts), so publishing from them would
+      # replace a 0-120 h series with a 120-168 h one. Segment 1 covers roughly
+      # the first 120 forecast hours, which is where the waiting hurt; the
+      # remainder arrives with the final publish job. Carrying prior wrfout
+      # artifacts into later segments would lift this, at ~2 GB per segment.
+      - name: Set up extraction environment
+        if: matrix.seg == 1 && steps.resume.outputs.skip != 'true'
+        continue-on-error: true
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: extract
+          create-args: python=3.12 wrf-python netcdf4 pandas numpy
+          cache-environment: true
+
+      - name: Run WRF segment
+        if: steps.resume.outputs.skip != 'true'
+        shell: bash -el {0}
+        env:
+          WRF_BUDGET_MIN: ${{ needs.prep.outputs.budget }}
+          FORCING: ${{ needs.prep.outputs.forcing }}
+          CYCLE: ${{ needs.prep.outputs.cycle }}
+          HOURS: ${{ needs.prep.outputs.hours }}
+          SEG: ${{ matrix.seg }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          rm -f PUBLISH_STOP
+          LOOP=""
+          # extract_stations.py reads sites.json from the repo root, and the
+          # only copy on this runner is inside the encrypted input bundle.
+          if [ "$SEG" = "1" ] && [ -n "${R2_ACCOUNT_ID:-}" ] \
+             && [ -f run_dir/sites.json ]; then
+            if micromamba activate extract 2>/dev/null; then
+              cp run_dir/sites.json .
+              scripts/publish_loop.sh "$SITE" "$FORCING" "$CYCLE" \
+                run_dir PUBLISH_STOP "$HOURS" &
+              LOOP=$!
+              echo "partial publisher running as pid $LOOP"
+            else
+              echo "no partial publishing: extract env unavailable"
+            fi
+          elif [ "$SEG" = "1" ]; then
+            echo "no partial publishing: R2 secrets or sites.json missing"
+          fi
+          set +e
+          scripts/run_pipeline.sh "$SITE" run_dir "$(nproc)" wrf
+          RC=$?
+          set -e
+          touch PUBLISH_STOP
+          if [ -n "$LOOP" ]; then wait "$LOOP" 2>/dev/null || true; fi
+          exit $RC
+
+      - name: WRF logs on failure
+        if: failure()
+        run: |
+          for f in run_dir/wrf/rsl.error.* run_dir/wrf/rsl.out.0000; do
+            [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
+          done || true
+
+      - name: Package segment state and output
+        if: steps.resume.outputs.skip != 'true'
+        run: |
+          cd run_dir/wrf
+          if [ -f WRF_DONE ]; then
+            tar -cf ../../state.tar WRF_DONE
+          else
+            TS=$(../../scripts/pick_restart.sh .)
+            echo "$TS" > RESTART_TS
+            # Tar whatever domains wrote a restart: a short-range inner nest
+            # stops early, so the set shrinks partway through the forecast.
+            tar -cf ../../state.tar RESTART_TS wrfrst_d0?_"$TS"
+          fi
+          cd ../..
+          scripts/crypt.sh enc state.tar state.tar.enc
+
+          mkdir -p segout
+          ls run_dir/wrf/wrfout_d02_* >/dev/null 2>&1 && mv run_dir/wrf/wrfout_d02_* segout/
+          tar -cf segout.tar -C segout .
+          scripts/crypt.sh enc segout.tar segout.tar.enc
+          ls -lh state.tar.enc segout.tar.enc
+
+      - name: Pass DONE marker through
+        if: steps.resume.outputs.skip == 'true'
+        run: |
+          cd run_dir/wrf && tar -cf ../../state.tar WRF_DONE && cd ../..
+          scripts/crypt.sh enc state.tar state.tar.enc
+          mkdir -p segout && tar -cf segout.tar -C segout .
+          scripts/crypt.sh enc segout.tar segout.tar.enc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: state-${{ inputs.forcing }}-seg${{ matrix.seg }}
+          path: state.tar.enc
+          retention-days: 2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrfout-${{ inputs.forcing }}-seg${{ matrix.seg }}
+          path: segout.tar.enc
+          retention-days: 2
+          compression-level: 0
+
+  publish:
+    needs: [prep, wrf]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+      ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
+      SITE: ${{ needs.prep.outputs.site }}
+      FORCING: ${{ needs.prep.outputs.forcing }}
+      CYCLE: ${{ needs.prep.outputs.cycle }}
+      HOURS: ${{ needs.prep.outputs.hours }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wps-bundle-${{ inputs.forcing }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-${{ inputs.forcing }}-seg*"
+          path: dl
+
+      - name: Collect segment outputs
+        run: |
+          chmod +x scripts/*.sh
+          scripts/crypt.sh dec bundle.tar.enc bundle.tar
+          tar -xf bundle.tar sites.json
+          FINISHED=false
+          for d in dl/wrfout-$FORCING-seg*; do
+            seg=$(basename "$d" | sed "s/^wrfout-$FORCING-//")
+            mkdir -p "run_dir/wrf/$seg"
+            scripts/crypt.sh dec "$d/segout.tar.enc" "$seg.tar"
+            tar -xf "$seg.tar" -C "run_dir/wrf/$seg"
+          done
+          for d in dl/state-$FORCING-seg*; do
+            scripts/crypt.sh dec "$d/state.tar.enc" st.tar
+            tar -tf st.tar | grep -q WRF_DONE && FINISHED=true
+          done
+          echo "frames: $(ls run_dir/wrf/seg*/wrfout_d02_* 2>/dev/null | wc -l) files"
+          [ "$FINISHED" = "true" ] || { echo "no segment reached SUCCESS COMPLETE WRF"; exit 1; }
+
+      - name: Set up extraction environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: extract
+          create-args: python=3.12 wrf-python netcdf4 pandas numpy
+          cache-environment: true
+
+      - name: Extract station JSON
+        shell: bash -el {0}
+        run: |
+          micromamba activate extract
+          python scripts/extract_stations.py --site "$SITE" \
+            --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --out wrf_store \
+            --cycle "$CYCLE" --forcing "$FORCING"
+          python scripts/make_wind_tiles.py \
+            --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
+            --cycle "$CYCLE" --out tiles_out
+          python - <<'EOF'
+          import json, os
+          d = json.load(open(f"wrf_store/{os.environ['SITE']}.json"))
+          s = d["series"]
+          nulls = {k: sum(1 for r in s if r[k] is None) for k in s[0]}
+          print(f"{len(s)} steps, {s[0]['time']} -> {s[-1]['time']}")
+          assert not any(v for k, v in nulls.items() if k != "time"), f"nulls: {nulls}"
+          EOF
+
+      # Results go to a release on the PRIVATE repo — this public repo keeps
+      # no plaintext run data, and encrypted artifacts expire in 2 days.
+      - name: Publish results to private repo
+        run: |
+          TAG="wrf-$SITE-$FORCING-$CYCLE"
+          gh release create "$TAG" -R "$CONFIG_REPO" \
+            --title "WRF $SITE $FORCING $CYCLE (+${HOURS}h)" \
+            --notes "Automated run from the public pipeline. $FORCING cycle $CYCLE, ${HOURS}h forecast. wrfout tar contains one segN/ dir per CI segment; concatenate + dedupe on time when reading." \
+            2>/dev/null || true
+          gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
+          if [ "${{ needs.prep.outputs.upload_wrfout }}" = "true" ]; then
+            tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls -d seg*)
+            gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
+          fi
+          echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
+
+      # Push the windstack-contract model file + refreshed manifest to R2 so
+      # the live page can fetch them. No-ops until the three R2_* secrets exist.
+      - name: Publish windstack data to R2
+        if: env.R2_ACCESS_KEY_ID != ''
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          MODEL="wrf-$FORCING"
+          DEST="s3://wavetrak-frames/wrf/$SITE/$MODEL"
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            "wrf_store/windstack-$MODEL.json" "$DEST/$CYCLE.json" \
+            --content-type application/json
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
+            --content-type application/json
+          aws s3 cp --endpoint-url "$EP" --region auto --recursive --only-show-errors \
+            tiles_out "s3://wavetrak-frames/wrf/$SITE/tiles/$MODEL/$CYCLE"
+          # The run is complete: drop the partial marker before listing, or
+          # the manifest would still advertise a "rest ETA" chip.
+          scripts/partial_marker.sh clear "$SITE" "$MODEL" "$CYCLE"
+          aws s3api list-objects-v2 --endpoint-url "$EP" --region auto \
+            --bucket wavetrak-frames --prefix "wrf/$SITE/" > listing.json
+          python3 scripts/make_manifest.py --site "$SITE" --listing listing.json \
+            --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" --out manifest.json
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
+            --content-type application/json
+          echo "R2: $DEST/{latest,$CYCLE}.json + wrf/manifest.json"
