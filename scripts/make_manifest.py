@@ -53,7 +53,18 @@ def main():
     ap.add_argument("--sites-json", required=True)
     ap.add_argument("--now", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--partial", action="append", default=[],
+                    metavar="MODEL:CYCLE:MAXFH:ETA_MIN",
+                    help="mark a member still-running: the page then shows "
+                         "'+MAXFH h' plus 'rest ETA N min' instead of "
+                         "implying a completed run")
     args = ap.parse_args()
+
+    partials = {}
+    for spec in args.partial:
+        mid, cyc, maxfh, eta = spec.split(":")
+        partials[(mid, cyc)] = {"status": "partial", "maxfh": int(maxfh),
+                                "eta_min": int(eta)}
 
     listed = json.loads(Path(args.listing).read_text())
     pat = re.compile(rf"^wrf/{re.escape(args.site)}/([A-Za-z0-9_\-]+)/(\d{{10}})\.json$")
@@ -94,7 +105,8 @@ def main():
             "id": cyc,
             "init": d.strftime("%Y-%m-%dT%H:00Z"),
             "label": cycle_label(cyc),
-            "avail": {mid: ({"status": "ready"} if cyc in found[mid]
+            "avail": {mid: (partials[(mid, cyc)] if (mid, cyc) in partials
+                             else {"status": "ready"} if cyc in found[mid]
                              else {"status": "notrun"}
                              if int(cyc[8:]) not in (MODEL_META.get(mid, {}).get("runs") or ALL_RUNS)
                              else {"status": "pending"})

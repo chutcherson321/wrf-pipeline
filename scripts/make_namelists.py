@@ -46,6 +46,10 @@ def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
     subs = {
         "num_metgrid_levels": f" num_metgrid_levels     = {METGRID_LEVELS[forcing]},",
         "restart_interval": f" restart_interval       = {restart_interval},",
+        # One output file per 12 forecast hours (history_interval is 60 min).
+        # A file is complete once the next one opens, which is what lets the
+        # run publish in 12-hour blocks while it is still integrating.
+        "frames_per_outfile": " frames_per_outfile     = 12, 12,",
         "run_days": f" run_days               = {days},",
         "run_hours": f" run_hours              = {rem},",
         "start_year": f" start_year             = {start.year}, {start.year},",

@@ -273,11 +273,55 @@ jobs:
         if: steps.resume.outputs.skip != 'true'
         run: docker pull dtcenter/wps_wrf
 
+      # Only segment 1 publishes as it goes. Later segments hold just their own
+      # frames (earlier ones live in artifacts), so publishing from them would
+      # replace a 0-120 h series with a 120-168 h one. Segment 1 covers roughly
+      # the first 120 forecast hours, which is where the waiting hurt; the
+      # remainder arrives with the final publish job. Carrying prior wrfout
+      # artifacts into later segments would lift this, at ~2 GB per segment.
+      - name: Set up extraction environment
+        if: matrix.seg == 1 && steps.resume.outputs.skip != 'true'
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: extract
+          create-args: python=3.12 wrf-python netcdf4 pandas numpy
+          cache-environment: true
+
       - name: Run WRF segment
         if: steps.resume.outputs.skip != 'true'
+        shell: bash -el {0}
         env:
           WRF_BUDGET_MIN: ${{ needs.prep.outputs.budget }}
-        run: scripts/run_pipeline.sh "$SITE" run_dir "$(nproc)" wrf
+          FORCING: ${{ needs.prep.outputs.forcing }}
+          CYCLE: ${{ needs.prep.outputs.cycle }}
+          HOURS: ${{ needs.prep.outputs.hours }}
+          SEG: ${{ matrix.seg }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          rm -f PUBLISH_STOP
+          LOOP=""
+          # extract_stations.py reads sites.json from the repo root, and the
+          # only copy on this runner is inside the encrypted input bundle.
+          if [ "$SEG" = "1" ] && [ -n "${R2_ACCOUNT_ID:-}" ] \
+             && [ -f run_dir/sites.json ]; then
+            micromamba activate extract
+            cp run_dir/sites.json .
+            scripts/publish_loop.sh "$SITE" "$FORCING" "$CYCLE" \
+              run_dir PUBLISH_STOP "$HOURS" &
+            LOOP=$!
+            echo "partial publisher running as pid $LOOP"
+          elif [ "$SEG" = "1" ]; then
+            echo "no partial publishing: R2 secrets or sites.json missing"
+          fi
+          set +e
+          scripts/run_pipeline.sh "$SITE" run_dir "$(nproc)" wrf
+          RC=$?
+          set -e
+          touch PUBLISH_STOP
+          if [ -n "$LOOP" ]; then wait "$LOOP" 2>/dev/null || true; fi
+          exit $RC
 
       - name: WRF logs on failure
         if: failure()
