@@ -113,6 +113,15 @@ def main():
                       for mid in model_ids},
         })
 
+    def nest_label(dom):
+        # A short-range inner nest covers only the first d03_hours of the run.
+        label = f"{dom.get('d02_km', 3)} km (d02)"
+        if dom.get("d03_km"):
+            h = dom.get("d03_hours")
+            span = f", 0-{h} h" if h else ""
+            label = f"{dom['d03_km']} km (d03{span}) / {label}"
+        return label
+
     s = json.loads(Path(args.sites_json).read_text())[args.site]
     sub = s.get("sublabel", "")
     dom = s.get("wrf_domain", {})
@@ -124,7 +133,7 @@ def main():
         "name": f"{s['label']}, {sub}" if sub else s["label"],
         "lat": s["lat"], "lon": s["lon"],
         "elev_ft": 0,
-        "nest": f"{dom.get('d02_km', 3)} km (d02)",
+        "nest": nest_label(dom),
         "tz": s.get("tz_abbr", "UTC"), "tzoff": s.get("tz_offset", 0),
     }
 

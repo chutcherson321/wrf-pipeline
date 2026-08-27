@@ -42,6 +42,50 @@ release assets — nothing produced by a run is stored publicly.
    rain, cloud, CAPE/CIN, reflectivity, precipitable water) → JSON; merges
    segment outputs and dedupes restart-boundary frames
 
+## Short-range inner nest
+
+A third domain can run at higher resolution over the first part of the
+forecast only. Cost scales roughly 27x per 3:1 nest ratio (9x the grid
+points, 3x the timesteps to hold CFL), so a 1 km d03 for the full 168 h is
+not affordable on a runner — but 1 km out to +48 h, with the 3 km d02
+carrying on to +168 h, is, and that is where nearly all of the extra detail
+is worth having.
+
+Set the repo variable `INNER_NEST_HOURS` (Settings -> Secrets and variables
+-> Actions -> Variables) to the lead time the inner nest should stop at;
+`0` or unset keeps every domain running the full length.
+
+The mechanism is the existing segmentation. `segment_namelist.py` already
+rewrites the namelist at each restart; with `--cycle-start` and
+`--nest-hours` it also drops `max_dom` to `--keep-doms` (default 2) once the
+restart being resumed from is at or past the cutoff. Reducing the domain
+count at a restart is safe — WRF reads restart files for domains
+`1..max_dom` and ignores the rest. Adding a nest mid-run is not supported.
+
+Two supporting pieces follow from that:
+
+- `pick_restart.sh` treats `d03`+ as optional. It still requires `d01` and
+  `d02` (those run the whole way, so a missing one means a truncated write)
+  and size-checks only the domains present in both of the last two restart
+  sets, so a retired nest is not mistaken for a partial write.
+- The segment state tarball carries `wrfrst_d0?_$TS`, so whichever domains
+  are still active are handed to the next segment.
+
+Two things this repo cannot supply, because they live in the private site
+config:
+
+- `geo_em.d03.nc`. Geogrid is skipped here by design, so the domain file has
+  to be produced by a WPS `geogrid.exe` run against the site's WPS_GEOG
+  data and published alongside the existing `geo_em.d0[12].nc`.
+- The site namelist needs `max_dom = 3` plus d03 geometry (`i_parent_start`,
+  `j_parent_start`, `e_we`, `e_sn`, `parent_grid_ratio = 3`,
+  `parent_time_step_ratio = 3`) and `d03_km` / `d03_hours` in
+  `wrf_domain` for the manifest label.
+
+Products (`make_wind_tiles.py`, `extract_stations.py`) still read `d02`.
+That is deliberate: d02 covers the full forecast, so charts and timeseries
+stay continuous while d03 output is evaluated on its own.
+
 ## Using it for your own site
 
 Fork it, point `CONFIG_REPO` at your own repo containing
