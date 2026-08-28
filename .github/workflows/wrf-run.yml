@@ -137,6 +137,12 @@ jobs:
             else c=$(scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true); fi
             [ -n "$c" ] && to_wrf_cycle "$c" || true
           }
+          # Step back a whole backbone cycle (12 h). GNU date on the runners,
+          # BSD date locally -- same fallback pattern latest_cycle.sh uses.
+          back12() {
+            date -u -d "${1:0:8} ${1:8:2}:00:00 -12 hours" +%Y%m%d%H 2>/dev/null \
+              || date -u -j -v-12H -f "%Y%m%d%H" "$1" +%Y%m%d%H
+          }
           TARGETS=""
           add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
 
@@ -149,14 +155,32 @@ jobs:
             echo "dispatch: $WANT $C"
             add "$WANT" "$C"
           else
-            # Every forcing whose newest complete cycle is not published yet.
+            # Every forcing with an unpublished cycle in the recent window.
             # Both are queued at once and integrate in parallel lanes.
+            #
+            # RETRY WINDOW: this used to look at the newest complete cycle and
+            # nothing else, so a cycle whose run failed was NEVER retried -- the
+            # pipeline simply waited for the next one and left a permanent hole
+            # in the history. Walking back two backbone cycles (24 h) means one
+            # failure gets picked up on the next tick instead. Newest first, so
+            # a backfill never delays current guidance; bounded at 24 h because
+            # beyond that the forcing data starts ageing out upstream and a
+            # queued run would fail at the download instead.
             for F in gfs ifs; do
               C=$(cycle_for "$F")
               if [ -z "$C" ]; then echo "$F: no cycle with complete data yet"; continue; fi
-              if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$C"; then
-                echo "$F $C: already published"; continue
-              fi
+              PICK=""
+              TRY="$C"
+              for _ in 1 2 3; do
+                if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$TRY"; then
+                  echo "$F $TRY: already published"
+                else
+                  PICK="$TRY"; break
+                fi
+                TRY=$(back12 "$TRY")
+              done
+              if [ -z "$PICK" ]; then continue; fi
+              C="$PICK"
               echo "$F $C: MISSING - queueing a lane"
               add "$F" "$C"
             done
