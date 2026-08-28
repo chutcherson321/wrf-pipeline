@@ -11,6 +11,7 @@ rewritten; all other settings (domains, physics, interval_seconds) pass
 through untouched.
 """
 import argparse
+import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,13 @@ def max_dom(text: str) -> int:
 
 def per_dom(key, value, n):
     return f" {key:<22} = " + " ".join([f"{value}," for _ in range(n)])
+
+
+def per_dom_each(key, values):
+    """Per-domain line where the domains DIFFER -- a short-range inner nest
+    stops before its parents, expressed as an earlier end_* on the innermost
+    domain only."""
+    return f" {key:<22} = " + " ".join([f"{v}," for v in values])
 
 
 def rewrite_wps(text: str, start: datetime, end: datetime, forcing: str) -> str:
@@ -55,9 +63,21 @@ RESTART_INTERVAL_MIN = 720
 
 
 def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
-                  forcing: str, restart_interval: int) -> str:
+                  forcing: str, restart_interval: int,
+                  nest_hours: int = 0) -> str:
+    """`nest_hours` > 0 stops the INNERMOST domain that early.
+
+    This has to happen in the INITIAL namelist, not only at a restart.
+    segment_namelist.py bounds the nest from segment 2 onward, but segment 1 is
+    the only segment a run ever reaches if the nest makes it too slow to
+    finish -- exactly what happened on 2026-08-28. A 1 km d03 was declared in
+    the site config, ran the full 168 h in segment 1 at roughly 27x the cost per
+    3:1 ratio, and both lanes died in the WRF step with their logs lost."""
     days, rem = divmod(hours, 24)
     n = max_dom(text)
+    ends = [end] * n
+    if nest_hours > 0 and n >= 2 and nest_hours < hours:
+        ends[-1] = start + timedelta(hours=nest_hours)
     subs = {
         "num_metgrid_levels": f" num_metgrid_levels     = {METGRID_LEVELS[forcing]},",
         "restart_interval": f" restart_interval       = {restart_interval},",
@@ -71,10 +91,10 @@ def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
         "start_month": per_dom("start_month", f"{start.month:02d}", n),
         "start_day": per_dom("start_day", f"{start.day:02d}", n),
         "start_hour": per_dom("start_hour", f"{start.hour:02d}", n),
-        "end_year": per_dom("end_year", end.year, n),
-        "end_month": per_dom("end_month", f"{end.month:02d}", n),
-        "end_day": per_dom("end_day", f"{end.day:02d}", n),
-        "end_hour": per_dom("end_hour", f"{end.hour:02d}", n),
+        "end_year": per_dom_each("end_year", [e.year for e in ends]),
+        "end_month": per_dom_each("end_month", [f"{e.month:02d}" for e in ends]),
+        "end_day": per_dom_each("end_day", [f"{e.day:02d}" for e in ends]),
+        "end_hour": per_dom_each("end_hour", [f"{e.hour:02d}" for e in ends]),
     }
     for key, line in subs.items():
         text, hits = re.subn(rf"^\s*{key}\s*=.*$", line, text, count=1, flags=re.M)
@@ -92,11 +112,26 @@ def main():
     ap.add_argument("--restart-interval", type=int, default=RESTART_INTERVAL_MIN,
                     help="restart file cadence, minutes of model time")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--nest-hours", type=int, default=0,
+                    help="stop the innermost domain this many forecast hours "
+                         "in; 0 falls back to the site's wrf_domain.d03_hours")
     args = ap.parse_args()
 
     start = datetime.strptime(args.cycle, "%Y%m%d%H")
     end = start + timedelta(hours=args.hours)
     site_dir = REPO / "sites" / args.site
+
+    # Precedence: an explicit --nest-hours wins, otherwise the site config that
+    # DECLARES the nest also bounds it. Defaulting from sites.json means a site
+    # cannot declare a 1 km nest and silently get an UNBOUNDED one because a
+    # separate repo variable was never set -- which is how 2026-08-28 broke.
+    nest_hours = args.nest_hours
+    if nest_hours <= 0:
+        try:
+            site = json.loads((REPO / "sites.json").read_text())[args.site]
+            nest_hours = int((site.get("wrf_domain") or {}).get("d03_hours") or 0)
+        except Exception:
+            nest_hours = 0
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -105,9 +140,11 @@ def main():
                     args.forcing))
     (out / "namelist.input").write_text(
         rewrite_input((site_dir / "namelist.input").read_text(), start, end,
-                      args.hours, args.forcing, args.restart_interval))
+                      args.hours, args.forcing, args.restart_interval,
+                      nest_hours))
     print(f"namelists written to {out} for {args.site} {args.cycle} "
-          f"+{args.hours}h forcing={args.forcing}")
+          f"+{args.hours}h forcing={args.forcing}"
+          + (f" inner nest +{nest_hours}h" if nest_hours > 0 else ""))
 
 
 if __name__ == "__main__":
