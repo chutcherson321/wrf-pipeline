@@ -134,8 +134,14 @@ jobs:
 
       - name: Bundle model inputs
         run: |
+          # Every domain real.exe produced, not a fixed pair: a site with a
+          # third nest writes wrfinput_d03 too, and leaving it out starts the
+          # segments with max_dom = 3 and no initial condition for d03.
+          # The subshell matters -- the shell expands the glob in the working
+          # directory, so it has to be run inside run_dir for tar's -C to line
+          # up with the names it is handed.
           tar -cf bundle.tar -C run_dir namelist.input \
-            wrf/wrfinput_d01 wrf/wrfinput_d02 wrf/wrfbdy_d01
+            $(cd run_dir && ls wrf/wrfinput_d0? wrf/wrfbdy_d01)
           tar -rf bundle.tar sites.json
           scripts/crypt.sh enc bundle.tar bundle.tar.enc
           ls -lh bundle.tar.enc
