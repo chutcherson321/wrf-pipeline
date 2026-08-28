@@ -337,7 +337,11 @@ jobs:
           scripts/crypt.sh enc state.tar state.tar.enc
 
           mkdir -p segout
-          ls run_dir/wrf/wrfout_d02_* >/dev/null 2>&1 && mv run_dir/wrf/wrfout_d02_* segout/
+          # Every domain the run produced, not a fixed pair. wrf.exe writes
+          # wrfout_d03 when a site runs an inner nest, and this dropped it --
+          # so the 1 km output was computed and then discarded, and the final
+          # publish globbed seg*/wrfout_d03_* which could never exist.
+          ls run_dir/wrf/wrfout_d0?_* >/dev/null 2>&1 && mv run_dir/wrf/wrfout_d0?_* segout/
           tar -cf segout.tar -C segout .
           scripts/crypt.sh enc segout.tar segout.tar.enc
           ls -lh state.tar.enc segout.tar.enc
@@ -402,7 +406,8 @@ jobs:
             scripts/crypt.sh dec "$d/state.tar.enc" st.tar
             tar -tf st.tar | grep -q WRF_DONE && FINISHED=true
           done
-          echo "frames: $(ls run_dir/wrf/seg*/wrfout_d02_* 2>/dev/null | wc -l) files"
+          echo "frames: d02 $(ls run_dir/wrf/seg*/wrfout_d02_* 2>/dev/null | wc -l)" \
+               "· d03 $(ls run_dir/wrf/seg*/wrfout_d03_* 2>/dev/null | wc -l)"
           [ "$FINISHED" = "true" ] || { echo "no segment reached SUCCESS COMPLETE WRF"; exit 1; }
 
       - name: Set up extraction environment
@@ -422,6 +427,15 @@ jobs:
           python scripts/make_wind_tiles.py \
             --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
             --cycle "$CYCLE" --out tiles_out
+          # Inner nest, when the site runs one. Same encoder, same 12-bit
+          # format -- only the glob differs -- written BESIDE d02 so the
+          # viewer can prefer the finer grid inside its box and fall back
+          # outside it. A missing d03/ simply means no inner nest.
+          if ls run_dir/wrf/seg*/wrfout_d03_* >/dev/null 2>&1; then
+            python scripts/make_wind_tiles.py \
+              --wrfout-glob 'run_dir/wrf/seg*/wrfout_d03_*' \
+              --cycle "$CYCLE" --out tiles_out/d03
+          fi
           python - <<'EOF'
           import json, os
           d = json.load(open(f"wrf_store/{os.environ['SITE']}.json"))
