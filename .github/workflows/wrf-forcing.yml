@@ -424,20 +424,10 @@ jobs:
 
       # Results go to a release on the PRIVATE repo — this public repo keeps
       # no plaintext run data, and encrypted artifacts expire in 2 days.
-      - name: Publish results to private repo
-        run: |
-          TAG="wrf-$SITE-$FORCING-$CYCLE"
-          gh release create "$TAG" -R "$CONFIG_REPO" \
-            --title "WRF $SITE $FORCING $CYCLE (+${HOURS}h)" \
-            --notes "Automated run from the public pipeline. $FORCING cycle $CYCLE, ${HOURS}h forecast. wrfout tar contains one segN/ dir per CI segment; concatenate + dedupe on time when reading." \
-            2>/dev/null || true
-          gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
-          if [ "${{ needs.prep.outputs.upload_wrfout }}" = "true" ]; then
-            tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls -d seg*)
-            gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
-          fi
-          echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
-
+      # R2 BEFORE the release on purpose: the page is what forecasters read and
+      # the release is an archive. With the order reversed, a failure in the
+      # archive step held back the display update -- on 2026-08-27 the manifest
+      # sat hours stale behind a publish that never reached this step.
       # Push the windstack-contract model file + refreshed manifest to R2 so
       # the live page can fetch them. No-ops until the three R2_* secrets exist.
       - name: Publish windstack data to R2
@@ -470,3 +460,29 @@ jobs:
             manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
             --content-type application/json
           echo "R2: $DEST/{latest,$CYCLE}.json + wrf/manifest.json"
+
+      - name: Publish results to private repo
+        run: |
+          TAG="wrf-$SITE-$FORCING-$CYCLE"
+          # `|| true` used to swallow EVERY create failure, including a dead
+          # token, so the only symptom was a missing tag noticed hours later.
+          # Tolerate exactly one case -- the release already exists, which is
+          # normal on a re-run -- and fail loudly on anything else.
+          if ! gh release create "$TAG" -R "$CONFIG_REPO" \
+                 --title "WRF $SITE $FORCING $CYCLE (+${HOURS}h)" \
+                 --notes "Automated run from the public pipeline. $FORCING cycle $CYCLE, ${HOURS}h forecast. wrfout tar contains one segN/ dir per CI segment; concatenate + dedupe on time when reading." \
+                 2>create.err; then
+            if gh release view "$TAG" -R "$CONFIG_REPO" >/dev/null 2>&1; then
+              echo "release $TAG already exists - reusing it"
+            else
+              echo "release create failed and $TAG does not exist:"
+              cat create.err
+              exit 1
+            fi
+          fi
+          gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
+          if [ "${{ needs.prep.outputs.upload_wrfout }}" = "true" ]; then
+            tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls -d seg*)
+            gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
+          fi
+          echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
