@@ -40,14 +40,15 @@ python scripts/extract_stations.py --site "$SITE" --wrfout-glob "$GLOB" \
   --out wrf_store --cycle "$CYCLE" --forcing "$FORCING" >/dev/null
 python scripts/make_wind_tiles.py --wrfout-glob "$GLOB" \
   --cycle "$CYCLE" --out tiles_out >/dev/null
-# Inner nest, when there is one. Deliberately inside the partial loop as well:
-# the 1 km hours should reach the page in blocks like d02, not only at the end.
-# `ls` rather than compgen keeps this POSIX-ish, as the header asks.
-D03_GLOB=$(printf '%s' "$GLOB" | sed 's/d02/d03/g')
-if ls $D03_GLOB >/dev/null 2>&1; then
-  python scripts/make_wind_tiles.py --wrfout-glob "$D03_GLOB" \
-    --cycle "$CYCLE" --out tiles_out/d03 >/dev/null
-fi
+# NOTE: d03 is deliberately NOT tiled here -- only in the final publish. This
+# poller re-reads every closed file each tick rather than incrementally, so its
+# per-poll cost already grows with elapsed run time, and d03 exists only over
+# the first ~24 h: exactly the window where wrf.exe is doing the 1 km
+# integration and is most starved for cores. At 109x109 against d02's 73x73 it
+# is ~2.2x the grid points per frame. Block publishing exists so the windstack
+# METEOGRAM stops waiting 6.5 h, and that is stations, not tiles -- nobody has
+# asked for the 1 km overlay in 30-minute increments. Add it here only if that
+# changes, and behind the same `timeout` wrapper the publish already uses.
 
 NEW_MAX=$(python -c "
 import json
