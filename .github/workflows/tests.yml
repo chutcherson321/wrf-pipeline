@@ -1,0 +1,77 @@
+name: tests
+
+# There was no check of any kind on this repo, so every change went straight
+# into a three-hour production run to be validated. Two bugs shipped that way in
+# one night (2026-08-27): `mapfile` (bash 4 only, so untestable on macOS) and an
+# unbounded `wait` on the background publisher that consumed the job's entire
+# 350-minute timeout. Both were cheap to catch and expensive to discover.
+#
+# Deliberately fast and dependency-free: no WRF, no AWS, no GRIB. It guards the
+# scripting around the forecast, which is where every failure so far has been.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          fail=0
+          for f in scripts/*.sh; do
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }
+          done
+          exit $fail
+
+      - name: Python syntax
+        run: |
+          fail=0
+          for f in scripts/*.py; do
+            python3 -m py_compile "$f" || { echo "::error file=$f::py_compile failed"; fail=1; }
+          done
+          exit $fail
+
+      - name: Workflows parse
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for f in glob.glob(".github/workflows/*.yml"):
+              try:
+                  yaml.safe_load(open(f))
+              except Exception as e:
+                  print(f"::error file={f}::{e}")
+                  bad = 1
+          sys.exit(bad)
+          PY
+
+      - name: Incremental-publish suite
+        run: scripts/publish.test.sh
+
+      # The publisher path is bash-4-clean on the runners by definition, so this
+      # is the check that would have caught `mapfile`: run the same suite under
+      # a shell that behaves like the oldest one a developer might have.
+      - name: Guard against bash-4-only syntax
+        run: |
+          for f in scripts/publish_loop.sh scripts/publish_r2.sh \
+                   scripts/partial_marker.sh scripts/is_published.sh \
+                   scripts/lib_wait.sh; do
+            if grep -nE '^\s*(mapfile|readarray)\b' "$f"; then
+              echo "::error file=$f::mapfile/readarray is bash 4+; macOS ships 3.2"
+              exit 1
+            fi
+            if grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*\^\^|\$\{[A-Za-z_][A-Za-z0-9_]*,,' "$f"; then
+              echo "::error file=$f::\${var^^}/\${var,,} is bash 4+"
+              exit 1
+            fi
+          done
+          echo "no bash-4-only syntax in the publish path"

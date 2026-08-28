@@ -39,9 +39,18 @@ while [ ! -f "$STOP" ]; do
   done
 
   echo "publish_loop: $closed closed file(s) — publishing"
-  # Cap a single publish. Without this one stalled upload wedges the loop, and
-  # a wedged loop used to take the whole job down with it.
-  if timeout "${PUBLISH_MAX_SEC:-900}" nice -n 10 "$PUBLISHER" \
+  # Cap a single publish: one stalled upload otherwise wedges the loop, and a
+  # wedged loop used to take the whole job down with it.
+  #
+  # Both wrappers are BEST EFFORT. `timeout` is GNU coreutils -- present on the
+  # runners, absent on macOS -- and `nice` cannot always lower priority in a
+  # sandbox. Hard-requiring either made this script unrunnable outside CI, which
+  # is the same portability trap as `mapfile`. Missing timeout means no cap, and
+  # the workflow's bounded shutdown is the backstop.
+  RUN=()
+  command -v timeout >/dev/null 2>&1 && RUN+=(timeout "${PUBLISH_MAX_SEC:-900}")
+  command -v nice    >/dev/null 2>&1 && RUN+=(nice -n 10)
+  if ${RUN[@]+"${RUN[@]}"} "$PUBLISHER" \
        "$SITE" "$FORCING" "$CYCLE" "$STAGE/wrfout_d02_*" "$EXPECT" "$SINCE"; then
     last_count="$closed"
   else
