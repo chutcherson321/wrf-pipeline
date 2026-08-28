@@ -8,7 +8,7 @@ site config — it operates on the namelist already templated for the run.
 Per-domain lines are rebuilt for however many domains max_dom declares, so
 a site running a third (inner) nest needs no change here.
 
-Short-range inner nest: pass --cycle-start and --nest-hours to stop the
+Short-range inner nest: pass --cycle-start and --nest-min-hours to stop the
 innermost domain(s) partway through a long forecast — e.g. a 1 km d03 out
 to +48 h while the 3 km d02 carries on to +168 h. Once the restart being
 resumed from is at or past that lead time, max_dom is reduced to
@@ -18,7 +18,7 @@ Going the other way (adding a nest mid-run) is not supported.
 
 Usage: segment_namelist.py --namelist run_dir/namelist.input \
     --restart-time 2026-08-24_12:00:00 [--out run_dir/namelist.input] \
-    [--cycle-start 2026-08-24_00:00:00 --nest-hours 48 [--keep-doms 2]]
+    [--cycle-start 2026-08-24_00:00:00 --nest-min-hours 24 [--keep-doms 2]]
 """
 import argparse
 import re
@@ -34,15 +34,21 @@ def main():
     ap.add_argument("--restart-time", required=True, help="YYYY-MM-DD_HH:MM:SS")
     ap.add_argument("--out", default=None)
     ap.add_argument("--cycle-start", default=None,
-                    help="forecast hour 0, needed with --nest-hours")
-    ap.add_argument("--nest-hours", type=int, default=0,
-                    help="drop to --keep-doms domains at/after this lead time")
+                    help="forecast hour 0, needed with --nest-min-hours")
+    # MIN, not an exact cutoff: the drop happens at the first RESTART at or
+    # after this lead time, so the nest runs at least this long and possibly
+    # into the next restart interval. The old --nest-hours spelling is kept so
+    # an older caller does not silently lose its nest.
+    ap.add_argument("--nest-min-hours", "--nest-hours", dest="nest_min_hours",
+                    type=int, default=0,
+                    help="drop to --keep-doms domains at the first restart "
+                         "at or after this lead time")
     ap.add_argument("--keep-doms", type=int, default=2,
-                    help="domains to keep once --nest-hours has passed")
+                    help="domains to keep once --nest-min-hours has passed")
     args = ap.parse_args()
 
-    if args.nest_hours and not args.cycle_start:
-        raise SystemExit("--nest-hours needs --cycle-start")
+    if args.nest_min_hours and not args.cycle_start:
+        raise SystemExit("--nest-min-hours needs --cycle-start")
 
     t = datetime.strptime(args.restart_time, TS)
     text = Path(args.namelist).read_text()
@@ -64,11 +70,11 @@ def main():
 
     ndom = grab("max_dom")
     drop_to = 0
-    if args.nest_hours:
-        cutoff = datetime.strptime(args.cycle_start, TS) + timedelta(hours=args.nest_hours)
+    if args.nest_min_hours:
+        cutoff = datetime.strptime(args.cycle_start, TS) + timedelta(hours=args.nest_min_hours)
         if t >= cutoff and ndom > args.keep_doms:
             drop_to = args.keep_doms
-            print(f"inner nest done at +{args.nest_hours}h "
+            print(f"inner nest done at +{args.nest_min_hours}h (min) "
                   f"({cutoff:{TS}}) — max_dom {ndom} -> {drop_to}")
             ndom = drop_to
 
