@@ -51,14 +51,23 @@ not affordable on a runner — but 1 km out to +48 h, with the 3 km d02
 carrying on to +168 h, is, and that is where nearly all of the extra detail
 is worth having.
 
-Set the repo variable `INNER_NEST_HOURS` (Settings -> Secrets and variables
--> Actions -> Variables) to the lead time the inner nest should stop at;
-`0` or unset keeps every domain running the full length.
+Set the repo variable `INNER_NEST_MIN_HOURS` (Settings -> Secrets and
+variables -> Actions -> Variables) to how far into the forecast the inner nest
+should run; `0` or unset keeps every domain running the full length. The older
+name `INNER_NEST_HOURS` is still read, so renaming it cannot silently disarm a
+nest that was already armed.
+
+**MIN, not an exact cutoff.** The nest is dropped at the first *restart* at or
+after that lead time, not at the lead time itself. Restarts are 12-hourly, so
+`24` means the nest runs at least 24 h and then stops at whichever restart
+boundary the run next reaches — budget for somewhat more than the number says.
+Making it exact would mean writing a restart at the cutoff, which costs a
+restart file for every distinct value anyone picks.
 
 The mechanism is the existing segmentation. `segment_namelist.py` already
 rewrites the namelist at each restart; with `--cycle-start` and
-`--nest-hours` it also drops `max_dom` to `--keep-doms` (default 2) once the
-restart being resumed from is at or past the cutoff. Reducing the domain
+`--nest-min-hours` it also drops `max_dom` to `--keep-doms` (default 2) once
+the restart being resumed from is at or past the cutoff. Reducing the domain
 count at a restart is safe — WRF reads restart files for domains
 `1..max_dom` and ignores the rest. Adding a nest mid-run is not supported.
 

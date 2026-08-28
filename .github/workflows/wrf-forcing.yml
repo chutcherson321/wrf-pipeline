@@ -134,8 +134,14 @@ jobs:
 
       - name: Bundle model inputs
         run: |
+          # Every domain real.exe produced, not a fixed pair: a site with a
+          # third nest writes wrfinput_d03 too, and leaving it out starts the
+          # segments with max_dom = 3 and no initial condition for d03.
+          # The subshell matters -- the shell expands the glob in the working
+          # directory, so it has to be run inside run_dir for tar's -C to line
+          # up with the names it is handed.
           tar -cf bundle.tar -C run_dir namelist.input \
-            wrf/wrfinput_d01 wrf/wrfinput_d02 wrf/wrfbdy_d01
+            $(cd run_dir && ls wrf/wrfinput_d0? wrf/wrfbdy_d01)
           tar -rf bundle.tar sites.json
           scripts/crypt.sh enc bundle.tar bundle.tar.enc
           ls -lh bundle.tar.enc
@@ -163,9 +169,16 @@ jobs:
       ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
       SITE: ${{ needs.prep.outputs.site }}
       CYCLE: ${{ needs.prep.outputs.cycle }}
-      # Repo variable INNER_NEST_HOURS: run the innermost nest only this far
-      # into the forecast (0 = off, every domain runs the full length).
-      INNER_NEST_HOURS: ${{ vars.INNER_NEST_HOURS || 0 }}
+      # Repo variable INNER_NEST_MIN_HOURS: run the innermost nest only this
+      # far into the forecast (0 = off, every domain runs the full length).
+      #
+      # MIN, because the drop happens at the first RESTART at or after this
+      # lead time, not at the lead time itself. With 12-hourly restarts, 24
+      # means the nest runs at least 24 h and stops at the next restart
+      # boundary the run reaches -- so budget for somewhat more than the
+      # number says. The old INNER_NEST_HOURS spelling is still honoured, so
+      # renaming the repo variable can never silently disarm the nest.
+      INNER_NEST_MIN_HOURS: ${{ vars.INNER_NEST_MIN_HOURS || vars.INNER_NEST_HOURS || 0 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -202,10 +215,10 @@ jobs:
             fi
             TS=$(cat run_dir/wrf/RESTART_TS)
             NEST_ARGS=""
-            if [ "${INNER_NEST_HOURS:-0}" -gt 0 ]; then
+            if [ "${INNER_NEST_MIN_HOURS:-0}" -gt 0 ]; then
               # CYCLE is YYYYMMDDHH; segment_namelist wants YYYY-MM-DD_HH:MM:SS
               START="${CYCLE:0:4}-${CYCLE:4:2}-${CYCLE:6:2}_${CYCLE:8:2}:00:00"
-              NEST_ARGS="--cycle-start $START --nest-hours $INNER_NEST_HOURS"
+              NEST_ARGS="--cycle-start $START --nest-min-hours $INNER_NEST_MIN_HOURS"
             fi
             python3 scripts/segment_namelist.py \
               --namelist run_dir/namelist.input --restart-time "$TS" $NEST_ARGS
