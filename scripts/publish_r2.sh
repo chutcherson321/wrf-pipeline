@@ -40,6 +40,14 @@ python scripts/extract_stations.py --site "$SITE" --wrfout-glob "$GLOB" \
   --out wrf_store --cycle "$CYCLE" --forcing "$FORCING" >/dev/null
 python scripts/make_wind_tiles.py --wrfout-glob "$GLOB" \
   --cycle "$CYCLE" --out tiles_out >/dev/null
+# Inner nest, when there is one. Deliberately inside the partial loop as well:
+# the 1 km hours should reach the page in blocks like d02, not only at the end.
+# `ls` rather than compgen keeps this POSIX-ish, as the header asks.
+D03_GLOB=$(printf '%s' "$GLOB" | sed 's/d02/d03/g')
+if ls $D03_GLOB >/dev/null 2>&1; then
+  python scripts/make_wind_tiles.py --wrfout-glob "$D03_GLOB" \
+    --cycle "$CYCLE" --out tiles_out/d03 >/dev/null
+fi
 
 NEW_MAX=$(python -c "
 import json
