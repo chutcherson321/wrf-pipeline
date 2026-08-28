@@ -39,8 +39,10 @@ while [ ! -f "$STOP" ]; do
   done
 
   echo "publish_loop: $closed closed file(s) — publishing"
-  if nice -n 10 "$PUBLISHER" "$SITE" "$FORCING" "$CYCLE" \
-       "$STAGE/wrfout_d02_*" "$EXPECT" "$SINCE"; then
+  # Cap a single publish. Without this one stalled upload wedges the loop, and
+  # a wedged loop used to take the whole job down with it.
+  if timeout "${PUBLISH_MAX_SEC:-900}" nice -n 10 "$PUBLISHER" \
+       "$SITE" "$FORCING" "$CYCLE" "$STAGE/wrfout_d02_*" "$EXPECT" "$SINCE"; then
     last_count="$closed"
   else
     echo "publish_loop: publish failed, will retry next tick" >&2

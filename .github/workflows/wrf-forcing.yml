@@ -267,7 +267,28 @@ jobs:
           RC=$?
           set -e
           touch PUBLISH_STOP
-          if [ -n "$LOOP" ]; then wait "$LOOP" 2>/dev/null || true; fi
+          # BOUNDED shutdown. An unbounded `wait` here let a stuck poller
+          # consume the job's entire timeout: on 2026-08-27 the forecast was
+          # complete at +167 h inside its 280-min budget, the poller never
+          # returned, and the job died at the 350-min cap -- so the publish job
+          # never ran and the manifest sat 4 h stale. Partial publishing is a
+          # nice-to-have and must never be able to fail the run it rides on.
+          # Killing mid-publish is safe: publish_r2.sh is idempotent, an R2 PUT
+          # is atomic per object, and the monotonicity guard protects whatever
+          # is already published.
+          if [ -n "$LOOP" ]; then
+            for _ in $(seq 1 60); do
+              kill -0 "$LOOP" 2>/dev/null || break
+              sleep 5
+            done
+            if kill -0 "$LOOP" 2>/dev/null; then
+              echo "publisher still running 5 min after stop - killing it"
+              kill -TERM "$LOOP" 2>/dev/null || true
+              sleep 2
+              kill -KILL "$LOOP" 2>/dev/null || true
+            fi
+            wait "$LOOP" 2>/dev/null || true
+          fi
           exit $RC
 
       - name: WRF logs on failure
