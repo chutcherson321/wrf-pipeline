@@ -214,11 +214,20 @@ jobs:
               exit 0
             fi
             TS=$(cat run_dir/wrf/RESTART_TS)
+            # Same fallback make_namelists.py uses for the INITIAL namelist: with
+            # no repo variable set, take the bound from the site config that
+            # DECLARES the nest. Without this the two disagree -- segment 1 stops
+            # d03 at d03_hours while this segment keeps max_dom = 3 and then dies
+            # on a wrfrst_d03 that was never written.
+            NEST_H="${INNER_NEST_MIN_HOURS:-0}"
+            if [ "$NEST_H" -le 0 ] && [ -f run_dir/sites.json ]; then
+              NEST_H=$(python3 -c "import json; s=json.load(open('run_dir/sites.json')).get('$SITE') or {}; print(int((s.get('wrf_domain') or {}).get('d03_hours') or 0))" 2>/dev/null || echo 0)
+            fi
             NEST_ARGS=""
-            if [ "${INNER_NEST_MIN_HOURS:-0}" -gt 0 ]; then
+            if [ "${NEST_H:-0}" -gt 0 ]; then
               # CYCLE is YYYYMMDDHH; segment_namelist wants YYYY-MM-DD_HH:MM:SS
               START="${CYCLE:0:4}-${CYCLE:4:2}-${CYCLE:6:2}_${CYCLE:8:2}:00:00"
-              NEST_ARGS="--cycle-start $START --nest-min-hours $INNER_NEST_MIN_HOURS"
+              NEST_ARGS="--cycle-start $START --nest-min-hours $NEST_H"
             fi
             python3 scripts/segment_namelist.py \
               --namelist run_dir/namelist.input --restart-time "$TS" $NEST_ARGS

@@ -2,12 +2,48 @@ name: wrf-run
 
 on:
   schedule:
-    # A tick every two hours rather than four fixed shots. GitHub delays
-    # scheduled events under load and DROPS them when the delay grows — on
-    # 2026-08-27 both of the day's crons never fired and the 00z cycle was
-    # simply lost. The `plan` job decides what is actually missing, so most
-    # ticks cost ~20 s and a dropped tick self-heals two hours later.
-    - cron: "15 */2 * * *"
+    # DISCRETE crons, not interval syntax. Measured over 12 h from 02:00Z on
+    # 2026-08-28: workflows written with discrete daily crons delivered nearly
+    # every slot (GRIB ingest 18 of ~20, pre-render 5 of 5), while both
+    # interval-syntax workflows were heavily throttled -- DFV's "10 * * * *"
+    # fired 3 of ~12 and this workflow's "15 */2 * * *" fired 2 of 6. It is not
+    # frequency: GRIB fires more often than DFV and still lands ~90%. WRF went
+    # 11 h overnight with no run at all and its output reached ~36 h stale.
+    #
+    # TREAT AS AN EXPERIMENT, NOT A DIAGNOSIS. The evidence is correlational and
+    # one night deep, and GitHub does not document interval crons as lower
+    # priority. If delivery has not improved within a day then syntax was not
+    # the cause, and the fallback is to trigger off a workflow that IS delivered
+    # reliably (workflow_run on the GRIB ingest would give ~18 per 12 h).
+    #
+    # Hourly rather than 2-hourly now that a slot is cheap to lose: the plan job
+    # exits in ~20 s when nothing is missing, and a dropped hour then costs an
+    # hour of latency instead of two. wavetrak-fetch#103 respelled DFV the same
+    # way.
+    - cron: "15 0 * * *"
+    - cron: "15 1 * * *"
+    - cron: "15 2 * * *"
+    - cron: "15 3 * * *"
+    - cron: "15 4 * * *"
+    - cron: "15 5 * * *"
+    - cron: "15 6 * * *"
+    - cron: "15 7 * * *"
+    - cron: "15 8 * * *"
+    - cron: "15 9 * * *"
+    - cron: "15 10 * * *"
+    - cron: "15 11 * * *"
+    - cron: "15 12 * * *"
+    - cron: "15 13 * * *"
+    - cron: "15 14 * * *"
+    - cron: "15 15 * * *"
+    - cron: "15 16 * * *"
+    - cron: "15 17 * * *"
+    - cron: "15 18 * * *"
+    - cron: "15 19 * * *"
+    - cron: "15 20 * * *"
+    - cron: "15 21 * * *"
+    - cron: "15 22 * * *"
+    - cron: "15 23 * * *"
   workflow_dispatch:
     inputs:
       site:
