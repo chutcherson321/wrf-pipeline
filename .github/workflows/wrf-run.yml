@@ -115,9 +115,27 @@ jobs:
           WANT="${{ inputs.forcing || 'auto' }}"
           { echo "site=$SITE"; echo "hours=$HOURS"; } >> "$GITHUB_OUTPUT"
 
+          # WRF runs 00/12z ONLY -- CH's decision, and make_manifest.py's
+          # WRF_RUNS = [0, 12] encodes the same thing so the page can say "not
+          # run" rather than "pending" at 06/18z. The cycle resolvers walk back
+          # in SIX-hour steps though, so they happily return a 06z or 18z cycle
+          # and the planner had no restriction: a 4.5 h run would occupy a lane
+          # producing a cycle nobody asked for, delaying the 12z one behind it.
+          # 06z -> 00z and 18z -> 12z of the same day; if the later cycle was
+          # complete the earlier one certainly is.
+          to_wrf_cycle() {
+            case "${1:8:2}" in
+              00|12) echo "$1" ;;
+              06)    echo "${1:0:8}00" ;;
+              18)    echo "${1:0:8}12" ;;
+              *)     echo "$1" ;;
+            esac
+          }
           cycle_for() {
-            if [ "$1" = "ifs" ]; then scripts/latest_ifs_cycle.sh "$HOURS" 2>/dev/null || true
-            else scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true; fi
+            local c
+            if [ "$1" = "ifs" ]; then c=$(scripts/latest_ifs_cycle.sh "$HOURS" 2>/dev/null || true)
+            else c=$(scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true); fi
+            [ -n "$c" ] && to_wrf_cycle "$c" || true
           }
           TARGETS=""
           add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
