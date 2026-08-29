@@ -331,12 +331,28 @@ jobs:
             [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
           done || true
 
+      # !cancelled(), not success(): on 2026-08-28/29 the WRF step exited 1 with
+      # run_pipeline RC=0 (a phantom code, cause still unknown), which skipped
+      # this step, so state-{forcing}-seg1 was never uploaded and segment 2 died
+      # on "Artifact not found". The restart handoff must outlive a bad exit code.
       - name: Package segment state and output
-        if: steps.resume.outputs.skip != 'true'
+        if: ${{ !cancelled() && steps.resume.outputs.skip != 'true' }}
         run: |
           cd run_dir/wrf
           if [ -f WRF_DONE ]; then
             tar -cf ../../state.tar WRF_DONE
+          elif ! ls wrfrst_d01_* >/dev/null 2>&1; then
+            # This step now runs after a failed WRF step (see the guard above), a
+            # case it was never designed for: wrf.exe can die before any restart
+            # pair exists. pick_restart.sh exits 1 there, which would add a second
+            # red saying nothing the WRF step has not already said -- and two reds
+            # competing for the eye is exactly what made 2026-08-28 hard to read.
+            # Say it once, exit clean, upload nothing. Segment 2 then fails on
+            # "Artifact not found", the honest single signal that the chain broke,
+            # at the point it broke. Safe to upload nothing: upload-artifact@v4
+            # defaults if-no-files-found to warn, not error.
+            echo "no restart pair — this segment produced nothing to hand off"
+            exit 0
           else
             TS=$(../../scripts/pick_restart.sh .)
             echo "$TS" > RESTART_TS
@@ -358,7 +374,7 @@ jobs:
           ls -lh state.tar.enc segout.tar.enc
 
       - name: Pass DONE marker through
-        if: steps.resume.outputs.skip == 'true'
+        if: ${{ !cancelled() && steps.resume.outputs.skip == 'true' }}
         run: |
           cd run_dir/wrf && tar -cf ../../state.tar WRF_DONE && cd ../..
           scripts/crypt.sh enc state.tar state.tar.enc
@@ -366,12 +382,14 @@ jobs:
           scripts/crypt.sh enc segout.tar segout.tar.enc
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: state-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: state.tar.enc
           retention-days: 2
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: wrfout-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: segout.tar.enc
@@ -380,6 +398,10 @@ jobs:
 
   publish:
     needs: [prep, wrf]
+    # A phantom failure on one segment must not bury a finished forecast. This is
+    # safe because the collect step below refuses to publish unless some segment
+    # actually reached SUCCESS COMPLETE WRF.
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
