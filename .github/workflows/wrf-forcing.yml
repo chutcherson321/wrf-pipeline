@@ -331,8 +331,12 @@ jobs:
             [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
           done || true
 
+      # !cancelled(), not success(): on 2026-08-28/29 the WRF step exited 1 with
+      # run_pipeline RC=0 (a phantom code, cause still unknown), which skipped
+      # this step, so state-{forcing}-seg1 was never uploaded and segment 2 died
+      # on "Artifact not found". The restart handoff must outlive a bad exit code.
       - name: Package segment state and output
-        if: steps.resume.outputs.skip != 'true'
+        if: ${{ !cancelled() && steps.resume.outputs.skip != 'true' }}
         run: |
           cd run_dir/wrf
           if [ -f WRF_DONE ]; then
@@ -358,7 +362,7 @@ jobs:
           ls -lh state.tar.enc segout.tar.enc
 
       - name: Pass DONE marker through
-        if: steps.resume.outputs.skip == 'true'
+        if: ${{ !cancelled() && steps.resume.outputs.skip == 'true' }}
         run: |
           cd run_dir/wrf && tar -cf ../../state.tar WRF_DONE && cd ../..
           scripts/crypt.sh enc state.tar state.tar.enc
@@ -366,12 +370,14 @@ jobs:
           scripts/crypt.sh enc segout.tar segout.tar.enc
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: state-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: state.tar.enc
           retention-days: 2
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: wrfout-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: segout.tar.enc
@@ -380,6 +386,10 @@ jobs:
 
   publish:
     needs: [prep, wrf]
+    # A phantom failure on one segment must not bury a finished forecast. This is
+    # safe because the collect step below refuses to publish unless some segment
+    # actually reached SUCCESS COMPLETE WRF.
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
