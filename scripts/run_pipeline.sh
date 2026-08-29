@@ -100,7 +100,10 @@ $budget_prefix mpirun --allow-run-as-root --oversubscribe -np $N_CORES $WRF_RUN_
     tail -3 "$RUN_DIR"/wrf/rsl.error.0000
   elif [ "$rc" -eq 124 ]; then
     echo "WRF budget expired after ${WRF_BUDGET_MIN}m — resumable from newest restart"
-    ls "$RUN_DIR"/wrf/wrfrst_d01_* >/dev/null 2>&1 || {
+    # Show what the guard is actually looking at. On 2026-08-28 both lanes took
+    # this path correctly at +60 h and the step still exited 1, and the guard
+    # being silent made it impossible to tell from the log whether it had fired.
+    ls -1 "$RUN_DIR"/wrf/wrfrst_d01_* 2>/dev/null | tail -3 || {
       echo "ERROR: budget expired before the first restart file was written" >&2
       exit 1
     }
@@ -110,6 +113,12 @@ $budget_prefix mpirun --allow-run-as-root --oversubscribe -np $N_CORES $WRF_RUN_
     exit "$rc"
   fi
   ls -lh "$RUN_DIR"/wrf/wrfout_d02_* 2>/dev/null || true
+  # EXPLICIT success. A budget expiry that leaves restart files is a NORMAL
+  # outcome -- the next segment resumes from them -- not an error. Relying on
+  # the last command's status to convey that was too fragile: on 2026-08-28 both
+  # lanes reached this line at +60 h and the step still exited 1, which
+  # fail-fast then turned into a cancelled 6.5 h forecast. Say 0 and mean it.
+  return 0
 }
 
 case "$STAGE" in
@@ -118,3 +127,6 @@ case "$STAGE" in
   all) run_wps; run_wrf ;;
   *) echo "unknown stage: $STAGE" >&2; exit 2 ;;
 esac
+# Do not leave the script's status to whatever the case happened to end on.
+echo "run_pipeline: stage=$STAGE finished ok"
+exit 0

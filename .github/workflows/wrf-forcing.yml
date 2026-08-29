@@ -158,7 +158,14 @@ jobs:
     timeout-minutes: 350
     strategy:
       max-parallel: 1
-      fail-fast: true
+      # fail-fast OFF. It was true, so ANY nonzero from segment 1 -- including
+      # the spurious exit 1 on 2026-08-28, where the budget had expired
+      # normally with restarts written at +60 h -- cancelled segments 2-4 and
+      # skipped publish, throwing away a healthy 6.5 h forecast. A later segment
+      # resuming from a restart is exactly the recovery path this matrix exists
+      # for, so let it try. The cost when segment 1 has genuinely failed is
+      # three quick artifact-download failures, which is cheap by comparison.
+      fail-fast: false
       matrix:
         include:
           - { seg: 1, prev: 0 }
@@ -311,6 +318,10 @@ jobs:
             fi
             wait "$LOOP" 2>/dev/null || true
           fi
+          # State the code. The 2026-08-28 failure was undiagnosable from the log
+          # precisely because this was silent: the step exited 1 while every
+          # branch above it had visibly succeeded.
+          echo "run_pipeline RC=$RC (segment $SEG)"
           exit $RC
 
       - name: WRF logs on failure
