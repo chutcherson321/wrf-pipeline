@@ -341,6 +341,18 @@ jobs:
           cd run_dir/wrf
           if [ -f WRF_DONE ]; then
             tar -cf ../../state.tar WRF_DONE
+          elif ! ls wrfrst_d01_* >/dev/null 2>&1; then
+            # This step now runs after a failed WRF step (see the guard above), a
+            # case it was never designed for: wrf.exe can die before any restart
+            # pair exists. pick_restart.sh exits 1 there, which would add a second
+            # red saying nothing the WRF step has not already said -- and two reds
+            # competing for the eye is exactly what made 2026-08-28 hard to read.
+            # Say it once, exit clean, upload nothing. Segment 2 then fails on
+            # "Artifact not found", the honest single signal that the chain broke,
+            # at the point it broke. Safe to upload nothing: upload-artifact@v4
+            # defaults if-no-files-found to warn, not error.
+            echo "no restart pair — this segment produced nothing to hand off"
+            exit 0
           else
             TS=$(../../scripts/pick_restart.sh .)
             echo "$TS" > RESTART_TS
