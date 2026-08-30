@@ -20,9 +20,22 @@ from pathlib import Path
 # Known models, in display order. Unknown model dirs get a generic entry so a
 # new forcing shows up (unstyled) rather than silently disappearing.
 # `runs` = the cycle hours this model is ever produced at. The WRF downscales
-# run 00/12z only (and ECMWF's 06/18z cycles are short-cutoff scda runs, so a
-# full-length WRF-IFS isn't available there even in principle). The page uses
-# this to say "not run" instead of "pending" — it is not waiting on them.
+# run 00/12z only — that is CH's policy, to halve the compute, and it is the
+# whole reason. The page uses this to say "not run" instead of "pending" at
+# 06/18z, so it is not shown waiting on something that was never coming.
+#
+# ★ CORRECTION 2026-08-30. This comment used to add "and ECMWF's 06/18z cycles
+# are short-cutoff scda runs, so a full-length WRF-IFS isn't available there
+# even in principle". THAT IS FALSE and was load-bearing in the wrong way:
+# since IFS 50r1 (2026-05-12) ECMWF publishes the long `oper` stream at 06/18z
+# too. Verified by probe, not assumption:
+#   .../20260829/18z/ifs/0p25/oper/20260829180000-18h-oper-fc.index -> 200
+#   the same path under scda/                                       -> 404
+# The behaviour here is still correct, but only because of the policy above.
+# Do NOT reuse the old reason: cited from this file it nearly shipped a stream
+# guard in wavetrak-fetch that would have made 06/18z ECMWF permanently
+# unavailable to the prerender and the oracle. See memory
+# correction_ecmwf_0618z_oper.
 WRF_RUNS = [0, 12]
 ALL_RUNS = [0, 6, 12, 18]
 MODEL_META = {
