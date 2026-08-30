@@ -128,7 +128,12 @@ jobs:
               00|12) echo "$1" ;;
               06)    echo "${1:0:8}00" ;;
               18)    echo "${1:0:8}12" ;;
-              *)     echo "$1" ;;
+              # Anything else is a bug upstream, not a cycle. Snap DOWN to the
+              # backbone rather than passing it through: the old catch-all let
+              # 2026082913 reach the IFS fetcher, which correctly refused it and
+              # killed the lane. Snapping keeps a planner bug from costing a run.
+              *)     if [ "10#${1:8:2}" -ge 12 ] 2>/dev/null || [ "$((10#${1:8:2}))" -ge 12 ]; then
+                       echo "${1:0:8}12"; else echo "${1:0:8}00"; fi ;;
             esac
           }
           cycle_for() {
@@ -137,11 +142,25 @@ jobs:
             else c=$(scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true); fi
             [ -n "$c" ] && to_wrf_cycle "$c" || true
           }
-          # Step back a whole backbone cycle (12 h). GNU date on the runners,
-          # BSD date locally -- same fallback pattern latest_cycle.sh uses.
+          # Step back a whole backbone cycle (12 h), via epoch seconds so no
+          # relative-date parsing is involved.
+          #
+          # The previous form -- date -d "20260829 00:00:00 -12 hours" -- was
+          # silently WRONG on GNU date, which is what the runners have. GNU date
+          # read "-12" as a UTC OFFSET, making 00:00 at UTC-12 = 12:00Z, then
+          # consumed the bare word "hours" as a relative item meaning +1 hour.
+          # So back12 2026082900 returned 2026082913: forward 13 h, not back 12.
+          # Observed 2026-08-29 in run 33266417525, which queued ifs 2026082913,
+          # a cycle that cannot exist -- IFS open data is 00z/12z only -- so
+          # fetch_ifs.sh refused it and the whole ECMWF lane died at prep. It
+          # only bites when the newest cycle is already published, which is
+          # exactly the retry path 3d01f48 added.
           back12() {
-            date -u -d "${1:0:8} ${1:8:2}:00:00 -12 hours" +%Y%m%d%H 2>/dev/null \
-              || date -u -j -v-12H -f "%Y%m%d%H" "$1" +%Y%m%d%H
+            local e
+            e=$(date -u -d "${1:0:4}-${1:4:2}-${1:6:2} ${1:8:2}:00:00 UTC" +%s 2>/dev/null) \
+              || e=$(date -u -j -f "%Y%m%d%H" "$1" +%s)
+            date -u -d "@$(( e - 43200 ))" +%Y%m%d%H 2>/dev/null \
+              || date -u -r "$(( e - 43200 ))" +%Y%m%d%H
           }
           TARGETS=""
           add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
