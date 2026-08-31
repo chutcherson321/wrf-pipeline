@@ -75,8 +75,36 @@ echo "publish_r2: publishing +${NEW_MAX}h (was +${OLD_MAX}h)"
 
 $S3 cp "wrf_store/windstack-$MODEL.json" "$DEST/$CYCLE.json" \
   --content-type application/json --only-show-errors
-$S3 cp "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
-  --content-type application/json --only-show-errors
+
+# latest.json needs its OWN rule. The monotonicity check above compares this
+# run against $CYCLE.json -- the same cycle -- which says nothing about whether
+# this cycle is the newest one published. A BACKFILL therefore sailed through
+# it: the retry window reaching back into an outage hole finds no $CYCLE.json,
+# passes trivially, and then overwrote latest.json with a two-day-old run.
+# That is exactly what happened on 2026-08-30, when ifs 2026082812 published at
+# 14:46Z after 2026082900 and 2026082912 were already out.
+#
+# The general shape, and worth remembering: two paths write the same artifact
+# and only one of them carries the rule. Per-cycle recency does not imply
+# global recency.
+LATEST_CYCLE=""
+if $S3 cp "$DEST/latest.json" latest_existing.json --only-show-errors 2>/dev/null; then
+  LATEST_CYCLE=$(python -c "
+import json
+try:
+    print(json.load(open('latest_existing.json')).get('cycle') or '')
+except Exception:
+    print('')" 2>/dev/null || echo "")
+  rm -f latest_existing.json
+fi
+# Cycle ids are YYYYMMDDHH, so lexical order is chronological. Equal is allowed:
+# a later segment of the SAME cycle must still be able to extend latest.json.
+if [ -n "$LATEST_CYCLE" ] && [[ "$CYCLE" < "$LATEST_CYCLE" ]]; then
+  echo "publish_r2: $CYCLE is older than the published latest ($LATEST_CYCLE) — leaving latest.json alone"
+else
+  $S3 cp "wrf_store/windstack-$MODEL.json" "$DEST/latest.json" \
+    --content-type application/json --only-show-errors
+fi
 $S3 cp tiles_out "s3://$BUCKET/wrf/$SITE/tiles/$MODEL/$CYCLE" \
   --recursive --only-show-errors
 
