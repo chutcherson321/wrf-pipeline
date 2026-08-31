@@ -36,7 +36,10 @@ echo "=== pipeline: site=$SITE run_dir=$RUN_DIR cores=$N_CORES stage=$STAGE forc
 chmod -R a+rwX "$RUN_DIR"
 
 run_wps() {
-  docker run --rm --name "wps_${SITE}" -v "$RUN_DIR:/run_dir" "$IMAGE" bash -c "
+  # --init for the same reason as the wrf stage below: real.exe runs under
+  # mpirun here too, and prep has never shown the phantom exit only because it
+  # is short -- not because it is structurally different.
+  docker run --init --rm --name "wps_${SITE}" -v "$RUN_DIR:/run_dir" "$IMAGE" bash -c "
 set -e
 cd /run_dir
 rm -f GRIBFILE.* FILE:* SOIL:*
@@ -82,7 +85,17 @@ run_wrf() {
     budget_prefix="timeout ${WRF_BUDGET_MIN}m"
   fi
   local rc=0
-  docker run --rm --name "wrf_${SITE}" -v "$RUN_DIR:/run_dir" "$IMAGE" bash -c "
+  # --init runs a real PID 1 inside the container to reap children. Without it,
+  # mpirun's ranks can outlive wrf.exe and keep the step's stdout pipe open;
+  # the runner then force-kills at step end and marks the step FAILED even
+  # though the script exited 0. That is the "phantom exit" seen since
+  # 2026-08-28: the log prints `run_pipeline RC=0` immediately before
+  # `##[error]Process completed with exit code 1`. It correlates exactly with
+  # running a container -- segments that only pass the DONE marker through
+  # (no docker run) are always green, and segments that run wrf.exe go red on
+  # BOTH the timeout path and the SUCCESS path, which rules out anything in
+  # this script's own logic.
+  docker run --init --rm --name "wrf_${SITE}" -v "$RUN_DIR:/run_dir" "$IMAGE" bash -c "
 set -e
 cd /run_dir/wrf
 rm -f WRF_DONE
