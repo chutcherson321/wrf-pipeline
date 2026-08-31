@@ -536,6 +536,31 @@ jobs:
               exit 1
             fi
           fi
+          # MONOTONICITY -- the rule publish_r2.sh already applies to R2: a
+          # shorter series must never replace a longer one for the same cycle.
+          # R2 was guarded, this upload was not, so ANY re-run of a published
+          # cycle at a shorter --hours would --clobber good data with a stub.
+          # A 12 h test dispatch against a published 168 h cycle does it, and
+          # the damage is silent: the release keeps its name and loses six days.
+          # The release asset carries no `fh`, so compare the last valid time.
+          # Both are ISO-8601 in a fixed zone, so lexical order is chronological.
+          rm -rf prev_release && mkdir -p prev_release
+          NEW_END=$(python3 -c "import json;print(max((r['time'] for r in json.load(open('wrf_store/$SITE.json'))['series']),default=''))")
+          OLD_END=""
+          if gh release download "$TAG" -R "$CONFIG_REPO" -p "$SITE.json" -D prev_release 2>/dev/null; then
+            OLD_END=$(python3 -c "import json;print(max((r['time'] for r in json.load(open('prev_release/$SITE.json')).get('series',[])),default=''))" 2>/dev/null || echo "")
+          fi
+          rm -rf prev_release
+          # [[ ]] not [ ]: `>` inside [ ] is not portable string comparison --
+          # it redirects, or errors, depending on the shell. Actions runs bash.
+          if [ -n "$OLD_END" ] && [[ ! "$NEW_END" > "$OLD_END" ]]; then
+            echo "publish: new series ends $NEW_END, published one ends $OLD_END"
+            echo "publish: not an advance -- leaving the existing release alone"
+            echo "Results: https://github.com/$CONFIG_REPO/releases/tag/$TAG"
+            exit 0
+          fi
+          echo "publish: series ends $NEW_END (was ${OLD_END:-nothing published})"
+
           gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
           if [ "${{ needs.prep.outputs.upload_wrfout }}" = "true" ]; then
             tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls -d seg*)
