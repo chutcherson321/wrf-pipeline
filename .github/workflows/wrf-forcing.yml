@@ -520,6 +520,11 @@ jobs:
             --bucket wavetrak-frames --prefix "wrf/$SITE/" > listing.json
           python3 scripts/make_manifest.py --site "$SITE" --listing listing.json \
             --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" --out manifest.json
+          # Per-site copy first, so a site stays reachable after the active
+          # site moves on; the global one is the active site's, as before.
+          aws s3 cp --endpoint-url "$EP" --region auto \
+            manifest.json "s3://wavetrak-frames/wrf/$SITE/manifest.json" \
+            --content-type application/json
           aws s3 cp --endpoint-url "$EP" --region auto \
             manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
             --content-type application/json

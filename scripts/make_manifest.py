@@ -14,8 +14,9 @@ on the page (the adapter treats a 404 that way by design).
 import argparse
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Known models, in display order. Unknown model dirs get a generic entry so a
 # new forcing shows up (unstyled) rather than silently disappearing.
@@ -114,12 +115,20 @@ def main():
         }
         models.append({"id": mid, **meta})
 
+    s = json.loads(Path(args.sites_json).read_text())[args.site]
+    dom = s.get("wrf_domain", {})
+
     groups = []
     wrf_members = [m["id"] for m in models if m["kind"] == "wrf"]
     glob_members = [m["id"] for m in models if m["kind"] == "global"]
     if wrf_members:
-        groups.append({"key": "wrf", "label": "WRF 3 km",
-                       "full": "WRF 3 km downscale", "members": wrf_members})
+        # A site with an inner nest serves 1 km then 3 km in one series, and
+        # the header says so. Which steps are which is per step (`grid` in
+        # the model file); this is only the group's name.
+        res = (f"{dom['d03_km']} km / {dom.get('d02_km', 3)} km" if dom.get("d03_km")
+               else f"{dom.get('d02_km', 3)} km")
+        groups.append({"key": "wrf", "label": f"WRF {res}",
+                       "full": f"WRF {res} downscale", "members": wrf_members})
     if glob_members:
         groups.append({"key": "global", "label": "Global / AI",
                        "full": "Global and AI raw", "members": glob_members})
@@ -141,17 +150,34 @@ def main():
         })
 
     def nest_label(dom):
-        # A short-range inner nest covers only the first d03_hours of the run.
+        # A short-range inner nest covers only the first d03_hours of the run,
+        # which may differ by cycle ({"00": 48, "12": 60} -> "0-48/60 h").
         label = f"{dom.get('d02_km', 3)} km (d02)"
         if dom.get("d03_km"):
             h = dom.get("d03_hours")
+            if isinstance(h, dict):
+                h = "/".join(str(h[k]) for k in sorted(h))
             span = f", 0-{h} h" if h else ""
             label = f"{dom['d03_km']} km (d03{span}) / {label}"
         return label
 
-    s = json.loads(Path(args.sites_json).read_text())[args.site]
+    # Time zone. `tz` is an IANA name (Europe/Lisbon) and is the truth: the
+    # page should convert every step with it, because a fixed offset is wrong
+    # across a DST change inside a 5-day run (Lisbon goes +1 -> 0 on the last
+    # Sunday of October). `tzoff`/`tz` stay for the page as it is today, now
+    # DERIVED from the zone at publish time when the site has one, instead of
+    # hand-kept numbers that silently go stale twice a year.
+    tz_iana = s.get("tz")
+    tzoff, tzabbr = s.get("tz_offset", 0), s.get("tz_abbr", "UTC")
+    if tz_iana:
+        now = datetime.strptime(args.now, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+        loc = now.astimezone(ZoneInfo(tz_iana))
+        off_h = loc.utcoffset().total_seconds() / 3600
+        tzoff = int(off_h) if off_h.is_integer() else off_h
+        tzabbr = loc.tzname() if "tz_abbr" not in s else s["tz_abbr"]
+        if "tz_offset" in s:
+            tzoff = s["tz_offset"]   # existing sites keep exactly what they had
     sub = s.get("sublabel", "")
-    dom = s.get("wrf_domain", {})
     site_block = {
         "id": args.site,
         "city": s["label"],
@@ -161,7 +187,8 @@ def main():
         "lat": s["lat"], "lon": s["lon"],
         "elev_ft": 0,
         "nest": nest_label(dom),
-        "tz": s.get("tz_abbr", "UTC"), "tzoff": s.get("tz_offset", 0),
+        "tz": tzabbr, "tzoff": tzoff,
+        "tz_iana": tz_iana,
     }
 
     manifest = {

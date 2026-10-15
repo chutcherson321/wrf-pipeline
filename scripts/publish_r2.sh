@@ -153,6 +153,8 @@ $S3API list-objects-v2 --bucket "$BUCKET" --prefix "wrf/$SITE/" > listing.json
 python scripts/make_manifest.py --site "$SITE" --listing listing.json \
   --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" \
   --out manifest.json
+$S3 cp manifest.json "s3://$BUCKET/wrf/$SITE/manifest.json" \
+  --content-type application/json --only-show-errors
 $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
   --content-type application/json --only-show-errors
 echo "$NOW $NEW_MAX" > "$RATE_STATE"
