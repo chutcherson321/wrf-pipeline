@@ -66,6 +66,9 @@ on:
       restart_interval_min:
         description: Restart cadence (minutes of model time)
         default: "720"
+      config_ref:
+        description: Branch of the private config repo (test a site before its config merges)
+        default: main
       upload_wrfout:
         description: Attach wrfout_d02 netCDF to the private release
         type: boolean
@@ -122,7 +125,7 @@ jobs:
           if [ -z "$HOURS" ]; then
             curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json" -o sites.json || true
+              "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json?ref=${{ inputs.config_ref || 'main' }}" -o sites.json || true
             HOURS=$(python3 scripts/site_config.py hours "$SITE" --sites sites.json 2>/dev/null || echo 168)
           fi
           echo "site $SITE, ${HOURS} h"
@@ -240,4 +243,5 @@ jobs:
       budget_min: ${{ inputs.budget_min || '280' }}
       restart_interval_min: ${{ inputs.restart_interval_min || '720' }}
       upload_wrfout: ${{ github.event_name != 'workflow_dispatch' && true || inputs.upload_wrfout }}
+      config_ref: ${{ inputs.config_ref || 'main' }}
     secrets: inherit

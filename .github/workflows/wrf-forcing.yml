@@ -32,12 +32,20 @@ on:
       upload_wrfout:
         type: boolean
         default: true
+      config_ref:
+        type: string
+        default: main
 
 permissions:
   contents: read
 
 env:
   CONFIG_REPO: chutcherson321/wavetrak-wrf
+  # wrf/manifest.json (no site in the key) is what windstack opens by default,
+  # so only the ACTIVE site may write it. Every site still writes its own
+  # wrf/{site}/manifest.json. Without this, a test dispatch of a new site
+  # replaced the live page with a 12-hour stub.
+  ACTIVE_SITE: ${{ vars.WRF_ACTIVE_SITE || 'cloudbreak' }}
 
 jobs:
   prep:
@@ -73,7 +81,7 @@ jobs:
       - name: Fetch site configs (private repo)
         run: |
           curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/${{ inputs.config_ref }}" \
             | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
           # A station may run on a shared domain folder (domain_dir).
           DOM=$(python3 scripts/site_config.py domain-dir "${{ steps.params.outputs.site }}" --sites sites.json)
@@ -525,9 +533,13 @@ jobs:
           aws s3 cp --endpoint-url "$EP" --region auto \
             manifest.json "s3://wavetrak-frames/wrf/$SITE/manifest.json" \
             --content-type application/json
-          aws s3 cp --endpoint-url "$EP" --region auto \
-            manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
-            --content-type application/json
+          if [ "$SITE" = "$ACTIVE_SITE" ]; then
+            aws s3 cp --endpoint-url "$EP" --region auto \
+              manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
+              --content-type application/json
+          else
+            echo "R2: $SITE is not the active site ($ACTIVE_SITE) - global manifest left alone"
+          fi
           echo "R2: $DEST/{latest,$CYCLE}.json + wrf/manifest.json"
 
       - name: Publish results to private repo

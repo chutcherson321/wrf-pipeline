@@ -155,7 +155,11 @@ python scripts/make_manifest.py --site "$SITE" --listing listing.json \
   --out manifest.json
 $S3 cp manifest.json "s3://$BUCKET/wrf/$SITE/manifest.json" \
   --content-type application/json --only-show-errors
-$S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
-  --content-type application/json --only-show-errors
+# The site-less key is the page's default view: only the active site writes it
+# (ACTIVE_SITE comes from the workflow; unset = old behaviour, always write).
+if [ -z "${ACTIVE_SITE:-}" ] || [ "$SITE" = "$ACTIVE_SITE" ]; then
+  $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
+    --content-type application/json --only-show-errors
+fi
 echo "$NOW $NEW_MAX" > "$RATE_STATE"
 echo "publish_r2: done (+${NEW_MAX}h)"
