@@ -47,8 +47,8 @@ on:
   workflow_dispatch:
     inputs:
       site:
-        description: Site key (must exist in the private config repo)
-        default: cloudbreak
+        description: Site key (blank = the WRF_ACTIVE_SITE repo variable, else cloudbreak)
+        default: ""
       forcing:
         description: Forcing model (auto = every one that is missing)
         type: choice
@@ -58,8 +58,8 @@ on:
         description: Cycle YYYYMMDDHH, or "auto" for newest complete (ignored when forcing=auto)
         default: auto
       hours:
-        description: Forecast length (hours, multiple of 6; IFS max 240)
-        default: "168"
+        description: Forecast length (hours, multiple of 6; IFS max 240; blank = the site's sites.json "hours", else 168)
+        default: ""
       budget_min:
         description: wrf.exe wall-clock budget per segment (minutes)
         default: "280"
@@ -110,8 +110,22 @@ jobs:
         id: decide
         run: |
           chmod +x scripts/*.sh
-          SITE="${{ inputs.site || 'cloudbreak' }}"
-          HOURS="${{ inputs.hours || '168' }}"
+          # Which site the schedule runs is a REPO VARIABLE, not code: switch
+          # with `gh variable set WRF_ACTIVE_SITE -R chutcherson321/wrf-pipeline
+          # -b supertubos` and back again with `-b cloudbreak`. Every site's
+          # config stays in the private repo untouched either way.
+          SITE="${{ inputs.site || vars.WRF_ACTIVE_SITE || 'cloudbreak' }}"
+          # Forecast length is a property of the site (Peniche runs 120 h,
+          # Cloudbreak 168 h), so read it from sites.json unless the dispatch
+          # names one. Falls back to 168 if the config cannot be read.
+          HOURS="${{ inputs.hours }}"
+          if [ -z "$HOURS" ]; then
+            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json" -o sites.json || true
+            HOURS=$(python3 scripts/site_config.py hours "$SITE" --sites sites.json 2>/dev/null || echo 168)
+          fi
+          echo "site $SITE, ${HOURS} h"
           WANT="${{ inputs.forcing || 'auto' }}"
           { echo "site=$SITE"; echo "hours=$HOURS"; } >> "$GITHUB_OUTPUT"
 

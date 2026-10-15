@@ -75,8 +75,10 @@ jobs:
           curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
             | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
-          test -f "sites/${{ steps.params.outputs.site }}/namelist.input" \
-            || { echo "unknown site: ${{ steps.params.outputs.site }}"; exit 1; }
+          # A station may run on a shared domain folder (domain_dir).
+          DOM=$(python3 scripts/site_config.py domain-dir "${{ steps.params.outputs.site }}" --sites sites.json)
+          test -f "sites/$DOM/namelist.input" \
+            || { echo "unknown site: ${{ steps.params.outputs.site }} (sites/$DOM)"; exit 1; }
 
       - name: Free runner disk space
         run: |
@@ -111,7 +113,8 @@ jobs:
             --forcing "${{ steps.params.outputs.forcing }}" \
             --restart-interval "${{ inputs.restart_interval_min }}" --out run_dir
           # Every domain the site config ships, so a third nest needs no change here.
-          cp "sites/${{ steps.params.outputs.site }}"/geo_em.d0?.nc run_dir/
+          DOM=$(python3 scripts/site_config.py domain-dir "${{ steps.params.outputs.site }}" --sites sites.json)
+          cp "sites/$DOM"/geo_em.d0?.nc run_dir/
           echo "domains: $(ls run_dir/geo_em.d0?.nc | wc -l)"
           if [ "${{ steps.params.outputs.forcing }}" = "ifs" ]; then
             cp vtables/Vtable.IFS run_dir/
@@ -228,7 +231,8 @@ jobs:
             # on a wrfrst_d03 that was never written.
             NEST_H="${INNER_NEST_MIN_HOURS:-0}"
             if [ "$NEST_H" -le 0 ] && [ -f run_dir/sites.json ]; then
-              NEST_H=$(python3 -c "import json; s=json.load(open('run_dir/sites.json')).get('$SITE') or {}; print(int((s.get('wrf_domain') or {}).get('d03_hours') or 0))" 2>/dev/null || echo 0)
+              # Per-cycle: d03_hours may be {"00": 48, "12": 60}.
+              NEST_H=$(python3 scripts/site_config.py nest-hours "$SITE" "$CYCLE" --sites run_dir/sites.json 2>/dev/null || echo 0)
             fi
             NEST_ARGS=""
             if [ "${NEST_H:-0}" -gt 0 ]; then
