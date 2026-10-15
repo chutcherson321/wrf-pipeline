@@ -7,18 +7,29 @@ CLI that emits the wavetrak-fetch station-JSON pattern.
 
 Usage:
   extract_stations.py --site teahupoo --wrfout-glob 'RUN/wrf/wrfout_d02_*' \
+      [--inner-glob 'RUN/wrf/wrfout_d03_*'] \
       --out wrf_store [--cycle 2026082200 --forcing gfs]
+
+With --inner-glob, each step comes from the 1 km nest while it exists (capped
+at the site's per-cycle d03_hours) and from d02 after it; every row records
+its source in `grid`. See domain_merge.py for the splice rule.
 """
 import argparse
 import glob
 import json
-from datetime import datetime
+import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import wrf
 from netCDF4 import Dataset
+
+# Sibling modules, whatever the caller's cwd or interpreter flags.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import site_config
+from domain_merge import inside_interior, merge_domains
 
 REPO = Path(__file__).resolve().parent.parent
 SITES = json.loads((REPO / "sites.json").read_text())
@@ -33,7 +44,9 @@ def nearest_ij(nc, lat, lon):
 
 def extract_site_timeseries(ncs, site_key):
     site = SITES[site_key]
+    # Per domain: (j, i) are indices on THIS grid, meaningless on another.
     j, i = nearest_ij(ncs[0], site["lat"], site["lon"])
+    shape = wrf.getvar(ncs[0], "XLAT", timeidx=0).shape
     times = pd.to_datetime(wrf.extract_times(ncs, wrf.ALL_TIMES)).round("h")
 
     wspd_wdir = wrf.getvar(ncs, "wspd_wdir10", timeidx=wrf.ALL_TIMES, method="cat")
@@ -109,13 +122,15 @@ def extract_site_timeseries(ncs, site_key):
     df = df[~df.index.duplicated(keep="first")].sort_index()
     rain_acc = df.pop("rain_acc_mm")
     df["rain_in"] = rain_acc.diff().fillna(rain_acc.iloc[0]) / 25.4
-    return df, (int(j), int(i))
+    return df, (int(j), int(i)), shape
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--site", required=True)
     ap.add_argument("--wrfout-glob", required=True)
+    ap.add_argument("--inner-glob", default=None,
+                    help="inner-nest wrfouts (d03); no matches = no nest")
     ap.add_argument("--out", required=True)
     ap.add_argument("--cycle", default=None)
     ap.add_argument("--forcing", default="gfs")
@@ -127,8 +142,29 @@ def main():
         raise SystemExit(f"no wrfout files match {args.wrfout_glob}")
     ncs = [Dataset(p) for p in paths]
 
-    df, (j, i) = extract_site_timeseries(ncs, args.site)
-    df = df.round(3)
+    df, (j, i), _ = extract_site_timeseries(ncs, args.site)
+    grids = {"d02": [j, i]}
+
+    # Inner nest, when the site has one and the point is in its interior.
+    inner = None
+    inner_paths = sorted(glob.glob(args.inner_glob)) if args.inner_glob else []
+    if inner_paths:
+        df3, (j3, i3), shape3 = extract_site_timeseries(
+            [Dataset(p) for p in inner_paths], args.site)
+        if inside_interior(j3, i3, shape3):
+            inner, grids["d03"] = df3, [j3, i3]
+        else:
+            print(f"{args.site}: nearest d03 cell ({j3},{i3}) of {shape3} is in the "
+                  "relaxation zone or outside the nest -- using d02 throughout")
+    inner_end = None
+    if inner is not None and args.cycle:
+        nh = site_config.nest_hours(SITES, args.site, args.cycle)
+        if nh > 0:
+            inner_end = datetime.strptime(args.cycle, "%Y%m%d%H") + timedelta(hours=nh)
+    df = merge_domains(inner, df, inner_end).round(3)
+    if inner is not None:
+        n3 = int((df["grid"] == "d03").sum())
+        print(f"d03 for {n3} steps to {df.index[n3 - 1]}, d02 for {len(df) - n3} after")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -141,8 +177,9 @@ def main():
         "lon": SITES[args.site]["lon"],
         "forcing": args.forcing,
         "cycle": args.cycle,
-        "grid_ji": [j, i],
-        "source_files": [Path(p).name for p in paths],
+        "grid_ji": [j, i],   # d02, as before; `grids` adds the nest's cell
+        "grids": grids,
+        "source_files": [Path(p).name for p in paths + inner_paths],
         "series": json.loads(station_df.reset_index().to_json(orient="records", date_format="iso")),
     }
     out_file = out_dir / f"{args.site}.json"
@@ -175,6 +212,9 @@ def main():
                 "qpf": num(row["rain_in"], 2),
                 "cl": intv(row["cl_pct"]), "cm": intv(row["cm_pct"]), "ch": intv(row["ch_pct"]),
                 "vis": None,  # no clean vis diagnostic in this WRF build
+                # Which grid this step came from. The display draws the
+                # resolution handoff from it; the extractor does not decide.
+                "grid": row["grid"],
             })
         ws = {"model": model_id, "cycle": args.cycle,
               "init": init.strftime("%Y-%m-%dT%H:00Z"), "series": series}

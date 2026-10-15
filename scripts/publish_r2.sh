@@ -4,6 +4,8 @@
 # while a run is still integrating — that is the point.
 #
 # Usage: publish_r2.sh SITE FORCING CYCLE WRFOUT_GLOB [EXPECT_HOURS] [SINCE_EPOCH]
+#        INNER_GLOB (env, optional): the inner nest's wrfouts. The point series
+#        then takes d03 first and d02 after it (extract_stations --inner-glob).
 # Needs: R2_ACCOUNT_ID, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and an
 #        activated python env carrying wrf-python.
 #
@@ -37,6 +39,7 @@ S3="aws s3 --endpoint-url $EP --region auto"
 S3API="aws s3api --endpoint-url $EP --region auto"
 
 python scripts/extract_stations.py --site "$SITE" --wrfout-glob "$GLOB" \
+  ${INNER_GLOB:+--inner-glob "$INNER_GLOB"} \
   --out wrf_store --cycle "$CYCLE" --forcing "$FORCING" >/dev/null
 python scripts/make_wind_tiles.py --wrfout-glob "$GLOB" \
   --cycle "$CYCLE" --out tiles_out >/dev/null

@@ -458,8 +458,12 @@ jobs:
         shell: bash -el {0}
         run: |
           micromamba activate extract
+          # The point series takes the 1 km nest where it exists (to the
+          # site's per-cycle d03 bound) and d02 after it; a site without a
+          # nest simply has no d03 files and gets d02 throughout.
           python scripts/extract_stations.py --site "$SITE" \
-            --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' --out wrf_store \
+            --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
+            --inner-glob 'run_dir/wrf/seg*/wrfout_d03_*' --out wrf_store \
             --cycle "$CYCLE" --forcing "$FORCING"
           python scripts/make_wind_tiles.py \
             --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \

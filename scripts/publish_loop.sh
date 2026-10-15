@@ -20,6 +20,7 @@ STAGE="partial_frames"
 # Integration started when this loop did; publish_r2.sh derives the rate from it.
 SINCE=$(date +%s)
 LIST=".publish_loop_files"
+LIST3=".publish_loop_files_d03"
 last_count=0
 
 while [ ! -f "$STOP" ]; do
@@ -37,6 +38,15 @@ while [ ! -f "$STOP" ]; do
   head -n "$closed" "$LIST" | while read -r f; do
     [ -f "$f" ] && ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$STAGE/"
   done
+  # Inner nest (1 km d03), when the site runs one. Its files open on the same
+  # 12-hour boundaries as d02's from the same start, so the first `closed`
+  # of them are closed exactly when d02's are -- and once the nest stops, its
+  # last file (one frame, at its end hour) is closed by then too. Staging the
+  # same count keeps the two domains in step without parsing timestamps.
+  ls -1 "$RUN_DIR"/wrf/wrfout_d03_* 2>/dev/null | sort > "$LIST3" || true
+  head -n "$closed" "$LIST3" | while read -r f; do
+    [ -f "$f" ] && ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$STAGE/"
+  done
 
   echo "publish_loop: $closed closed file(s) — publishing"
   # Cap a single publish: one stalled upload otherwise wedges the loop, and a
@@ -50,12 +60,12 @@ while [ ! -f "$STOP" ]; do
   RUN=()
   command -v timeout >/dev/null 2>&1 && RUN+=(timeout "${PUBLISH_MAX_SEC:-900}")
   command -v nice    >/dev/null 2>&1 && RUN+=(nice -n 10)
-  if ${RUN[@]+"${RUN[@]}"} "$PUBLISHER" \
+  if INNER_GLOB="$STAGE/wrfout_d03_*" ${RUN[@]+"${RUN[@]}"} "$PUBLISHER" \
        "$SITE" "$FORCING" "$CYCLE" "$STAGE/wrfout_d02_*" "$EXPECT" "$SINCE"; then
     last_count="$closed"
   else
     echo "publish_loop: publish failed, will retry next tick" >&2
   fi
 done
-rm -f "$LIST"
+rm -f "$LIST" "$LIST3"
 echo "publish_loop: stop file seen, exiting"
