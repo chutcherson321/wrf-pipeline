@@ -540,7 +540,7 @@ jobs:
           else
             echo "R2: $SITE is not the active site ($ACTIVE_SITE) - global manifest left alone"
           fi
-          echo "R2: $DEST/{latest,$CYCLE}.json + wrf/manifest.json"
+          echo "R2: $DEST/{latest,$CYCLE}.json + wrf/$SITE/manifest.json"
 
       - name: Publish results to private repo
         run: |
