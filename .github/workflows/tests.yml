@@ -64,6 +64,14 @@ jobs:
           python3 -m pip install --quiet pandas
           python3 scripts/domain_merge.test.py
 
+      # Which wrfouts the partial publisher may read while wrf.exe runs: real
+      # netCDF files and a real HDF5 lock held by a writer process (the
+      # 2026-10-16 stall), plus readable-but-unwritten last frames.
+      - name: wrfout readiness suite
+        run: |
+          python3 -m pip install --quiet netCDF4 numpy
+          python3 scripts/wrfout_ready.test.py
+
       # The publisher path is bash-4-clean on the runners by definition, so this
       # is the check that would have caught `mapfile`: run the same suite under
       # a shell that behaves like the oldest one a developer might have.
