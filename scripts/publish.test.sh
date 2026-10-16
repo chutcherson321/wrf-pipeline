@@ -80,7 +80,16 @@ case "${1:-}" in
 esac
 exit 0
 STUB
-chmod +x bin/aws bin/python
+# The readiness probe (wrfout_ready.py needs netCDF4, and these fixtures are
+# empty files): ready unless the file says HELD, i.e. wrf.exe still has it open.
+# Same contract as the real one -- the ready prefix, stop at the first miss.
+cat > bin/probe <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$PWD/probed.log"
+for f in "$@"; do grep -q HELD "$f" 2>/dev/null && { echo "held: $f" >&2; break; }; echo "$f"; done
+STUB
+chmod +x bin/aws bin/python bin/probe
+export PROBE="$WORK/bin/probe"
 export PATH="$WORK/bin:$PATH"
 export FAKE_S3="$WORK/s3"; mkdir -p "$FAKE_S3"
 export R2_ACCOUNT_ID=test
@@ -162,6 +171,41 @@ for t in 2026-10-17_00 2026-10-17_12 2026-10-18_00; do
 done
 touch run3/wrf/wrfout_d02_2026-10-18_12:00:00
 is "nest finished: all 5 d03 files staged once d02 moves past them" "$(run_loop3)" "5/5"
+
+# T1c: THE 2026-10-16 STALL (run 38901516183). Supertubos 00Z: d03 ends at +24
+# in a one-frame file wrf.exe holds open until the run exits. It used to be
+# staged as closed, the extractor hit `NetCDF: HDF error` on it, and the
+# partial sat at +23h for 90 min. Now it is held back and d02 still advances.
+rm -rf run3; mkdir -p run3/wrf
+for t in 2026-10-16_00 2026-10-16_12 2026-10-17_00 2026-10-17_12; do
+  touch "run3/wrf/wrfout_d02_${t}:00:00"
+done
+touch run3/wrf/wrfout_d03_2026-10-16_00:00:00 run3/wrf/wrfout_d03_2026-10-16_12:00:00
+echo HELD > run3/wrf/wrfout_d03_2026-10-17_00:00:00
+: > probed.log
+is "held-open d03 file skipped, d02 hours still publish" "$(run_loop3)" "3/2"
+is "...once: the forecast did not advance, so no re-publish" \
+  "$(wc -l < staged3.log | tr -d ' ')" "1"
+# Within ONE loop: a new d02 close is probed alone, the earlier passes are cached
+: > staged3.log; : > probed.log; rm -f STOP
+PUBLISH_POLL_SEC=1 PUBLISHER="$WORK/pub3.sh" \
+  scripts/publish_loop.sh sp gfs 2026101600 run3 STOP 120 >/dev/null 2>&1 &
+LP=$!
+for _ in $(seq 1 20); do [ -s staged3.log ] && break; sleep 0.25; done
+touch run3/wrf/wrfout_d02_2026-10-17_12:30:00   # sorts after the last one
+for _ in $(seq 1 20); do [ "$(wc -l < staged3.log | tr -d ' ')" -ge 2 ] && break; sleep 0.25; done
+touch STOP; sleep 2; kill -KILL "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
+rm -f run3/wrf/wrfout_d02_2026-10-17_12:30:00
+is "...second advance stages one more d02 file" "$(tail -1 staged3.log)" "4/2"
+is "a file that passed the probe is not read again" \
+  "$(grep -c "wrfout_d02_2026-10-16_00" probed.log)" "1"
+# wrf.exe exits (in reality the final publish takes over); the file now reads
+: > run3/wrf/wrfout_d03_2026-10-17_00:00:00
+touch run3/wrf/wrfout_d02_2026-10-18_00:00:00
+is "...and is staged once it reads cleanly" "$(run_loop3)" "4/3"
+# A d02 file that will not read stops d02 there: no gap in the series
+echo HELD > run3/wrf/wrfout_d02_2026-10-17_00:00:00
+is "unreadable d02 file: only the ready prefix stages" "$(run_loop3)" "2/2"
 
 # T2: no new close -> no second publish
 n_before=$(wc -l < staged.log | tr -d ' ')
