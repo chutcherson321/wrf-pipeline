@@ -82,3 +82,55 @@ jobs:
             fi
           done
           echo "no bash-4-only syntax in the publish path"
+
+  # TEMPORARY EXPERIMENT (removed in the fix commit): does `exit 0` inside a
+  # `bash -el` login shell with setup-micromamba come out as exit code 1?
+  # A non-interactive login shell runs ~/.bash_logout only when the `exit`
+  # builtin is executed, and the WRF segment step is the one login-shell step
+  # that ends with `exit $RC`.
+  repro-login-exit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: probe
+          create-args: python=3.12
+          cache-environment: true
+      - name: Inspect logout file
+        run: |
+          echo "SHLVL=$SHLVL"; ls -l ~/.bash_logout /usr/bin/clear_console 2>&1 || true
+          echo "--- ~/.bash_logout"; cat ~/.bash_logout 2>/dev/null || echo "(none)"
+          echo "--- ~/.bash_profile tail"; tail -5 ~/.bash_profile 2>/dev/null || echo "(none)"
+      - name: A login shell, explicit exit 0
+        id: a
+        continue-on-error: true
+        shell: bash -el {0}
+        run: |
+          micromamba activate probe
+          RC=0
+          echo "RC=$RC"
+          exit $RC
+      - name: B login shell, no exit builtin
+        id: b
+        continue-on-error: true
+        shell: bash -el {0}
+        run: |
+          micromamba activate probe
+          RC=0
+          echo "RC=$RC"
+          (exit "$RC")
+      - name: C login shell, failing RC still fails
+        id: c
+        continue-on-error: true
+        shell: bash -el {0}
+        run: |
+          micromamba activate probe
+          RC=3
+          echo "RC=$RC"
+          (exit "$RC")
+      - name: Outcomes
+        run: |
+          echo "A exit-builtin RC=0      -> ${{ steps.a.outcome }}"
+          echo "B subshell RC=0          -> ${{ steps.b.outcome }}"
+          echo "C subshell RC=3 (expect failure) -> ${{ steps.c.outcome }}"
