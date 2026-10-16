@@ -340,7 +340,16 @@ jobs:
           # precisely because this was silent: the step exited 1 while every
           # branch above it had visibly succeeded.
           echo "run_pipeline RC=$RC (segment $SEG)"
-          exit $RC
+          # NOT `exit $RC`. This step runs as a LOGIN shell (bash -el, for
+          # micromamba), and a non-interactive login shell runs ~/.bash_logout
+          # when -- and only when -- the `exit` builtin is called. The runner's
+          # ~/.bash_logout ends in `clear_console -q`, which fails with no
+          # terminal, and its status REPLACES the exit code: `exit 0` came out
+          # as 1. That was the "phantom" exit 1 behind every red-but-successful
+          # segment since 2026-08-28. Proven in CI (wrf-pipeline#20): exit 0 ->
+          # 1, `(exit 0)` -> 0, `(exit 3)` -> 3. A subshell exit sets the
+          # status without the builtin; under -e a nonzero still fails the step.
+          (exit "$RC")
 
       - name: WRF logs on failure
         if: failure()
