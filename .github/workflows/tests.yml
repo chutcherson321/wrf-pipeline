@@ -82,3 +82,25 @@ jobs:
             fi
           done
           echo "no bash-4-only syntax in the publish path"
+
+      # A LOGIN-shell step (shell: bash -el / bash -l) must never call the
+      # `exit` builtin: on the runners it executes ~/.bash_logout, whose failing
+      # `clear_console` replaces the exit code (exit 0 -> 1). That is what made
+      # every successful WRF segment show red. Use `(exit "$RC")` instead.
+      - name: No exit builtin in login-shell steps
+        run: |
+          python3 - <<'PY'
+          import glob, re, sys, yaml
+          bad = []
+          for f in glob.glob(".github/workflows/*.yml"):
+              wf = yaml.safe_load(open(f))
+              for jn, job in (wf.get("jobs") or {}).items():
+                  for st in job.get("steps") or []:
+                      sh, run = str(st.get("shell", "")), st.get("run") or ""
+                      if re.search(r"\bbash\b.*-\w*l", sh):
+                          for n, line in enumerate(run.splitlines(), 1):
+                              if re.match(r"\s*(exit)(\s|$)", line) or re.search(r"[;&|{]\s*exit(\s|$)", line):
+                                  bad.append(f"{f}: {jn} / {st.get('name')}: line {n}: {line.strip()}")
+          for b in bad: print(f"::error::{b}")
+          sys.exit(1 if bad else 0)
+          PY
