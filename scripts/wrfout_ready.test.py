@@ -55,6 +55,10 @@ nc.close()
 
 def write(path, fmt="NETCDF4", frames=2, stub=0, t2=290.0, hold=0.0):
     """Write a wrfout. hold > 0 returns the writer still holding it open."""
+    # A marker left by an earlier write of the same path would let us return
+    # before this writer has the file open, and the probe would read the OLD,
+    # complete copy (CI caught exactly that race; locally the writer won it).
+    Path(f"{path}.ready").unlink(missing_ok=True)
     p = subprocess.Popen([sys.executable, "-c", WRITER, str(path), fmt,
                           str(frames), str(stub), str(t2), str(hold)])
     if hold <= 0:
