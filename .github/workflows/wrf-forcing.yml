@@ -187,8 +187,8 @@ jobs:
       ARTIFACT_KEY: ${{ secrets.ARTIFACT_KEY }}
       SITE: ${{ needs.prep.outputs.site }}
       CYCLE: ${{ needs.prep.outputs.cycle }}
-      # Repo variable INNER_NEST_MIN_HOURS: run the innermost nest only this
-      # far into the forecast (0 = off, every domain runs the full length).
+      # Repo variable INNER_NEST_MIN_HOURS: fallback bound for a site whose
+      # sites.json declares a nest but no d03_hours (the site's own value wins).
       #
       # MIN, because the drop happens at the first RESTART at or after this
       # lead time, not at the lead time itself. With 12-hourly restarts, 24
@@ -232,15 +232,21 @@ jobs:
               exit 0
             fi
             TS=$(cat run_dir/wrf/RESTART_TS)
-            # Same fallback make_namelists.py uses for the INITIAL namelist: with
-            # no repo variable set, take the bound from the site config that
-            # DECLARES the nest. Without this the two disagree -- segment 1 stops
-            # d03 at d03_hours while this segment keeps max_dom = 3 and then dies
-            # on a wrfrst_d03 that was never written.
-            NEST_H="${INNER_NEST_MIN_HOURS:-0}"
-            if [ "$NEST_H" -le 0 ] && [ -f run_dir/sites.json ]; then
-              # Per-cycle: d03_hours may be {"00": 48, "12": 60}.
+            # The SITE that declares a nest bounds it, per cycle
+            # (d03_hours: {"00": 48, "12": 60}) -- the same value make_namelists.py
+            # wrote into segment 1's initial namelist, so every segment agrees.
+            # The INNER_NEST_MIN_HOURS repo variable is only a fallback for a site
+            # that declares no bound. It used to WIN: a leftover 24 from the
+            # 2026-08 Cloudbreak experiment would have dropped Peniche's 1 km nest
+            # at the first restart past +24 h from segment 2 on, cutting a 12Z
+            # cycle's +60 h nest short and moving its seam off 00Z, while segment 1
+            # (which never reads the variable) ran to the site's bound.
+            NEST_H=0
+            if [ -f run_dir/sites.json ]; then
               NEST_H=$(python3 scripts/site_config.py nest-hours "$SITE" "$CYCLE" --sites run_dir/sites.json 2>/dev/null || echo 0)
+            fi
+            if [ "${NEST_H:-0}" -le 0 ]; then
+              NEST_H="${INNER_NEST_MIN_HOURS:-0}"
             fi
             NEST_ARGS=""
             if [ "${NEST_H:-0}" -gt 0 ]; then
