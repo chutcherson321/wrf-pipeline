@@ -12,10 +12,15 @@
 # Env knobs:
 #   FORCING=gfs|ifs (default gfs) — ifs ungribs ECMWF open data with
 #     vtables/Vtable.IFS plus a GFS soil subset under the SOIL prefix
-#   WRF_BUDGET_MIN (stage wrf; default 0 = no budget) — stop wrf.exe after
-#     this many wall minutes; a restart file lets the next segment resume.
+#   WRF_BUDGET_MIN (stage wrf; default 0 = no budget) — SOFT wall-clock
+#     budget. Past it, wrf.exe is stopped just after the next restart finishes
+#     writing (scripts/wrf_budget.py), never in the middle of one; a restart
+#     file lets the next segment resume.
 #     Exit code 0 with run_dir/wrf/WRF_DONE present = forecast complete;
 #     exit 0 without WRF_DONE = budget expired, resumable.
+#   WRF_HARD_MIN (default 320) — wrf.exe never runs longer than this, restart
+#     or not. Keep it ~30 min under the segment job's timeout-minutes (350):
+#     the steps around the WRF step take up to ~6 min before and ~7 after.
 #
 # geogrid is SKIPPED: the site's prebuilt geo_em.d0*.nc are used instead,
 # which removes the 30 GB WPS_GEOG dependency entirely.
@@ -25,6 +30,8 @@ SITE="$1"; RUN_DIR="$(cd "$2" && pwd)"; N_CORES="${3:-$(nproc)}"
 STAGE="${4:-all}"
 FORCING="${FORCING:-gfs}"
 WRF_BUDGET_MIN="${WRF_BUDGET_MIN:-0}"
+WRF_HARD_MIN="${WRF_HARD_MIN:-320}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="dtcenter/wps_wrf"
 WPS_DIR="/comsoftware/wrf/WPS-4.3"
 WRF_RUN_DIR="/comsoftware/wrf/WRF-4.3/run"
@@ -80,9 +87,20 @@ ls -lh wrfinput_d0* wrfbdy_d01
 }
 
 run_wrf() {
-  local budget_prefix=""
+  local budget_prefix="" hard=""
+  rm -f "$RUN_DIR/wrf/BUDGET_STOP"
   if [ "$WRF_BUDGET_MIN" -gt 0 ]; then
-    budget_prefix="timeout ${WRF_BUDGET_MIN}m"
+    hard="$WRF_HARD_MIN"
+    [ "$hard" -ge "$WRF_BUDGET_MIN" ] || hard="$WRF_BUDGET_MIN"
+    if command -v python3 >/dev/null 2>&1; then
+      # The watcher stops wrf.exe at a restart boundary; this `timeout` is only
+      # the backstop if the watcher itself dies, so it sits just past the cap.
+      budget_prefix="timeout $((hard + 2))m"
+    else
+      echo "WARNING: no python3 for the budget watcher — blind ${WRF_BUDGET_MIN}m timeout" >&2
+      budget_prefix="timeout ${WRF_BUDGET_MIN}m"
+      hard=""
+    fi
   fi
   local rc=0
   # --init runs a real PID 1 inside the container to reap children. Without it,
@@ -105,14 +123,35 @@ rm -f namelist.input && cp /run_dir/namelist.input .
 
 echo \"=== WRF.EXE ($N_CORES cores, budget=${WRF_BUDGET_MIN}m) ===\"
 $budget_prefix mpirun --allow-run-as-root --oversubscribe -np $N_CORES $WRF_RUN_DIR/wrf.exe
-" || rc=$?
+" &
+  local dpid=$! wpid=""
+  if [ -n "$hard" ]; then
+    python3 "$SCRIPT_DIR/wrf_budget.py" --wrf-dir "$RUN_DIR/wrf" \
+      --soft-min "$WRF_BUDGET_MIN" --hard-min "$hard" --container "wrf_${SITE}" &
+    wpid=$!
+  fi
+  wait "$dpid" || rc=$?
+  if [ -n "$wpid" ]; then
+    kill "$wpid" 2>/dev/null || true
+    wait "$wpid" 2>/dev/null || true
+  fi
+  # A watcher stop ends the container with TERM/KILL (143/137); it means the
+  # same thing the old `timeout` exit did.
+  if [ -f "$RUN_DIR/wrf/BUDGET_STOP" ]; then
+    if grep -q "SUCCESS COMPLETE WRF" "$RUN_DIR"/wrf/rsl.error.0000 2>/dev/null; then
+      rc=0  # finished in the seconds between the decision and the stop
+    else
+      rc=124
+    fi
+  fi
 
   if [ "$rc" -eq 0 ] && grep -q "SUCCESS COMPLETE WRF" "$RUN_DIR"/wrf/rsl.error.0000 2>/dev/null; then
     touch "$RUN_DIR/wrf/WRF_DONE"
     echo "WRF COMPLETE"
     tail -3 "$RUN_DIR"/wrf/rsl.error.0000
   elif [ "$rc" -eq 124 ]; then
-    echo "WRF budget expired after ${WRF_BUDGET_MIN}m — resumable from newest restart"
+    echo "WRF budget expired (soft ${WRF_BUDGET_MIN}m, hard ${hard:-$WRF_BUDGET_MIN}m) — resumable from newest restart"
+    cat "$RUN_DIR/wrf/BUDGET_STOP" 2>/dev/null || echo "(stopped by the backstop timeout)"
     # Show what the guard is actually looking at. On 2026-08-28 both lanes took
     # this path correctly at +60 h and the step still exited 1, and the guard
     # being silent made it impossible to tell from the log whether it had fired.
