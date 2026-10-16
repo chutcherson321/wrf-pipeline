@@ -50,9 +50,9 @@ on:
         description: Site key (blank = the WRF_ACTIVE_SITE repo variable, else cloudbreak)
         default: ""
       forcing:
-        description: Forcing model (auto = every one that is missing)
+        description: Forcing model (auto = every one that is missing; both = GFS and IFS on the SAME cycle, in parallel)
         type: choice
-        options: [auto, gfs, ifs]
+        options: [auto, gfs, ifs, both]
         default: auto
       cycle:
         description: Cycle YYYYMMDDHH, or "auto" for newest complete (ignored when forcing=auto)
@@ -182,9 +182,25 @@ jobs:
           TARGETS=""
           add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
 
+          # "both": GFS and IFS on ONE cycle, in parallel lanes -- the pair
+          # windstack compares. Two single-forcing dispatches would queue behind
+          # each other on the workflow concurrency group (two full runs in
+          # series), and auto picks each forcing's own newest missing cycle, so
+          # the two can land on different inits. With cycle=auto this takes the
+          # OLDER of the two newest complete cycles, the newest both can run.
+          # Like a named forcing it is an instruction: it runs even if published.
+          if [ "$WANT" = "both" ]; then
+            C="${{ inputs.cycle || 'auto' }}"
+            if [ "$C" = "auto" ]; then
+              CG=$(cycle_for gfs); CI=$(cycle_for ifs)
+              [ -n "$CG" ] && [ -n "$CI" ] || { echo "no common cycle: gfs=$CG ifs=$CI"; exit 1; }
+              if [[ "$CG" < "$CI" ]]; then C="$CG"; else C="$CI"; fi
+            fi
+            echo "dispatch: gfs+ifs $C"
+            add gfs "$C"; add ifs "$C"
           # Naming one forcing is an instruction, not a suggestion: it runs even
           # if that cycle is already published (that is how you force a redo).
-          if [ "$WANT" != "auto" ]; then
+          elif [ "$WANT" != "auto" ]; then
             C="${{ inputs.cycle || 'auto' }}"
             [ "$C" = "auto" ] && C=$(cycle_for "$WANT")
             [ -n "$C" ] || { echo "no $WANT cycle with complete data"; exit 1; }
