@@ -283,6 +283,11 @@ jobs:
         shell: bash -el {0}
         env:
           WRF_BUDGET_MIN: ${{ needs.prep.outputs.budget }}
+          # Past the (soft) budget wrf.exe runs on to the next restart, but
+          # never past this. It must stay ~30 min under timeout-minutes above:
+          # setup before this step takes up to ~6 min, the publisher shutdown
+          # up to 5, and packaging/upload after it a couple more.
+          WRF_HARD_MIN: 320
           FORCING: ${{ needs.prep.outputs.forcing }}
           CYCLE: ${{ needs.prep.outputs.cycle }}
           HOURS: ${{ needs.prep.outputs.hours }}
