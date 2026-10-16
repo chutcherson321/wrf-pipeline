@@ -72,6 +72,14 @@ jobs:
           python3 -m pip install --quiet netCDF4 numpy
           python3 scripts/wrfout_ready.test.py
 
+      # The segment handoff: wrf_budget.py stops wrf.exe at a restart boundary,
+      # never mid-write, and pick_restart.sh judges completeness from the log,
+      # not from (compressed, so variable) file sizes. Includes a compressed-
+      # time replay through the real watcher, pick_restart.sh and
+      # run_pipeline.sh (docker stubbed), old `timeout` vs new.
+      - name: Segment handoff suite
+        run: python3 scripts/wrf_budget.test.py
+
       # The publisher path is bash-4-clean on the runners by definition, so this
       # is the check that would have caught `mapfile`: run the same suite under
       # a shell that behaves like the oldest one a developer might have.
