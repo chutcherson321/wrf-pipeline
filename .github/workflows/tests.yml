@@ -57,6 +57,13 @@ jobs:
       - name: Incremental-publish suite
         run: scripts/publish.test.sh
 
+      # The d03-then-d02 splice (seam at the per-cycle bound, no padding, rain
+      # never differenced across domains). pandas only -- no wrf-python.
+      - name: Inner-nest merge suite
+        run: |
+          python3 -m pip install --quiet pandas
+          python3 scripts/domain_merge.test.py
+
       # The publisher path is bash-4-clean on the runners by definition, so this
       # is the check that would have caught `mapfile`: run the same suite under
       # a shell that behaves like the oldest one a developer might have.

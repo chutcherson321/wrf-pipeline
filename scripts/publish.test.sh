@@ -135,6 +135,34 @@ sleep 3; touch STOP; sleep 2
 kill -KILL "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
 is "stages every file except the newest" "$(tail -1 staged.log 2>/dev/null || echo none)" "2"
 
+# T1b: an inner nest's closed files ride along, in step with d02's; Cloudbreak
+# (no d03 files) hands the publisher an empty inner glob
+cat > pub3.sh <<'P'
+#!/usr/bin/env bash
+echo "$(ls $4 2>/dev/null | wc -l | tr -d ' ')/$(ls $INNER_GLOB 2>/dev/null | wc -l | tr -d ' ')" >> "$PWD/staged3.log"
+P
+chmod +x pub3.sh
+run_loop3(){
+  : > staged3.log; rm -f STOP
+  PUBLISH_POLL_SEC=1 PUBLISHER="$WORK/pub3.sh" \
+    scripts/publish_loop.sh sp gfs 2026101600 run3 STOP 120 >/dev/null 2>&1 &
+  LP=$!
+  sleep 3; touch STOP; sleep 2
+  kill -KILL "$LP" 2>/dev/null; wait "$LP" 2>/dev/null
+  tail -1 staged3.log 2>/dev/null || echo none
+}
+mkdir -p run3/wrf
+touch run3/wrf/wrfout_d02_2026-10-16_00:00:00 run3/wrf/wrfout_d02_2026-10-16_12:00:00
+is "no nest: inner glob stages nothing" "$(run_loop3)" "1/0"
+touch run3/wrf/wrfout_d03_2026-10-16_00:00:00 run3/wrf/wrfout_d03_2026-10-16_12:00:00
+is "nest still running: its newest file stays back with d02's" "$(run_loop3)" "1/1"
+# Nest ended at +48 (files 00,12,24,36 and the one-frame 48), d02 now writing +60
+for t in 2026-10-17_00 2026-10-17_12 2026-10-18_00; do
+  touch "run3/wrf/wrfout_d03_${t}:00:00" "run3/wrf/wrfout_d02_${t}:00:00"
+done
+touch run3/wrf/wrfout_d02_2026-10-18_12:00:00
+is "nest finished: all 5 d03 files staged once d02 moves past them" "$(run_loop3)" "5/5"
+
 # T2: no new close -> no second publish
 n_before=$(wc -l < staged.log | tr -d ' ')
 rm -f STOP

@@ -11,10 +11,14 @@ rewritten; all other settings (domains, physics, interval_seconds) pass
 through untouched.
 """
 import argparse
-import json
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Sibling modules, whatever the caller's cwd or interpreter flags.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import site_config
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -56,6 +60,22 @@ def rewrite_wps(text: str, start: datetime, end: datetime, forcing: str) -> str:
 # GFS pgrb2 0p25 -> 34; IFS 0p25 open data -> 14 pl + sfc = 15.
 METGRID_LEVELS = {"gfs": 34, "ifs": 15}
 
+# Minutes of model time per wrfout file (see frames_per_outfile below).
+BLOCK_MIN = 720
+
+
+def history_intervals(text: str, n: int) -> list:
+    """history_interval per domain in minutes. A short list repeats its last
+    value, which is how WRF fills a per-domain setting given fewer columns."""
+    m = re.search(r"^\s*history_interval\s*=\s*([^\n]*)", text, flags=re.M)
+    if not m:
+        raise SystemExit("namelist.input: no 'history_interval' line")
+    vals = [int(v) for v in re.findall(r"\d+", m.group(1).split("!")[0])]
+    if not vals:
+        raise SystemExit("namelist.input: empty 'history_interval'")
+    return (vals + [vals[-1]] * n)[:n]
+
+
 # Restart files every 12 forecast hours (default) so segmented runs can
 # resume near where the previous job's wall-clock budget expired (minutes of
 # model time).
@@ -81,10 +101,15 @@ def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
     subs = {
         "num_metgrid_levels": f" num_metgrid_levels     = {METGRID_LEVELS[forcing]},",
         "restart_interval": f" restart_interval       = {restart_interval},",
-        # One output file per 12 forecast hours (history_interval is 60 min).
-        # A file is complete once the next one opens, which is what lets the
-        # run publish in 12-hour blocks while it is still integrating.
-        "frames_per_outfile": per_dom("frames_per_outfile", 12, n),
+        # One output file per 12 forecast hours on EVERY domain. A file is
+        # complete once the next one opens, which is what lets the run publish
+        # in 12-hour blocks while it is still integrating. The frame count
+        # follows each domain's own history_interval: 12 for an hourly domain,
+        # 4 for a 3-hourly one. A flat 12 gave a 3-hourly d02 one file per
+        # 36 h, so the partial publisher saw nothing for a day and a half.
+        "frames_per_outfile": per_dom_each(
+            "frames_per_outfile",
+            [max(1, BLOCK_MIN // h) for h in history_intervals(text, n)]),
         "run_days": f" run_days               = {days},",
         "run_hours": f" run_hours              = {rem},",
         "start_year": per_dom("start_year", start.year, n),
@@ -119,19 +144,21 @@ def main():
 
     start = datetime.strptime(args.cycle, "%Y%m%d%H")
     end = start + timedelta(hours=args.hours)
-    site_dir = REPO / "sites" / args.site
+    try:
+        sites = site_config.load_sites()
+    except FileNotFoundError:
+        sites = {}
+    # A station can run on a shared domain folder (supertubos -> sites/peniche).
+    site_dir = REPO / "sites" / site_config.domain_dir(sites, args.site)
 
     # Precedence: an explicit --nest-hours wins, otherwise the site config that
     # DECLARES the nest also bounds it. Defaulting from sites.json means a site
     # cannot declare a 1 km nest and silently get an UNBOUNDED one because a
     # separate repo variable was never set -- which is how 2026-08-28 broke.
+    # The bound may differ by cycle hour (d03_hours: {"00": 48, "12": 60}).
     nest_hours = args.nest_hours
     if nest_hours <= 0:
-        try:
-            site = json.loads((REPO / "sites.json").read_text())[args.site]
-            nest_hours = int((site.get("wrf_domain") or {}).get("d03_hours") or 0)
-        except Exception:
-            nest_hours = 0
+        nest_hours = site_config.nest_hours(sites, args.site, args.cycle)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 

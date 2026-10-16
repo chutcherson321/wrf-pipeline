@@ -4,6 +4,8 @@
 # while a run is still integrating — that is the point.
 #
 # Usage: publish_r2.sh SITE FORCING CYCLE WRFOUT_GLOB [EXPECT_HOURS] [SINCE_EPOCH]
+#        INNER_GLOB (env, optional): the inner nest's wrfouts. The point series
+#        then takes d03 first and d02 after it (extract_stations --inner-glob).
 # Needs: R2_ACCOUNT_ID, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and an
 #        activated python env carrying wrf-python.
 #
@@ -37,6 +39,7 @@ S3="aws s3 --endpoint-url $EP --region auto"
 S3API="aws s3api --endpoint-url $EP --region auto"
 
 python scripts/extract_stations.py --site "$SITE" --wrfout-glob "$GLOB" \
+  ${INNER_GLOB:+--inner-glob "$INNER_GLOB"} \
   --out wrf_store --cycle "$CYCLE" --forcing "$FORCING" >/dev/null
 python scripts/make_wind_tiles.py --wrfout-glob "$GLOB" \
   --cycle "$CYCLE" --out tiles_out >/dev/null
@@ -150,7 +153,13 @@ $S3API list-objects-v2 --bucket "$BUCKET" --prefix "wrf/$SITE/" > listing.json
 python scripts/make_manifest.py --site "$SITE" --listing listing.json \
   --sites-json sites.json --now "$(date -u +%Y-%m-%dT%H:%MZ)" \
   --out manifest.json
-$S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
+$S3 cp manifest.json "s3://$BUCKET/wrf/$SITE/manifest.json" \
   --content-type application/json --only-show-errors
+# The site-less key is the page's default view: only the active site writes it
+# (ACTIVE_SITE comes from the workflow; unset = old behaviour, always write).
+if [ -z "${ACTIVE_SITE:-}" ] || [ "$SITE" = "$ACTIVE_SITE" ]; then
+  $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
+    --content-type application/json --only-show-errors
+fi
 echo "$NOW $NEW_MAX" > "$RATE_STATE"
 echo "publish_r2: done (+${NEW_MAX}h)"

@@ -10,8 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       site:
-        description: Site in the private config repo
+        description: Site in the private config repo (its domain_dir is what gets built)
         default: cloudbreak
+      config_ref:
+        description: Branch of the private config repo to read (build a new domain before merging it)
+        default: main
       add_nest_span_cells:
         description: >-
           Add an inner nest covering this many parent cells before running
@@ -53,11 +56,13 @@ jobs:
       - name: Fetch site config
         run: |
           curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$CONFIG_REPO/tarball/main" \
+            "https://api.github.com/repos/$CONFIG_REPO/tarball/${{ inputs.config_ref }}" \
             | tar -xz --strip-components=1 --wildcards '*/sites/*' '*/sites.json'
-          test -f "sites/$SITE/namelist.wps" || { echo "no namelist.wps for $SITE" >&2; exit 1; }
+          DOM=$(python3 scripts/site_config.py domain-dir "$SITE" --sites sites.json)
+          echo "DOM=$DOM" >> "$GITHUB_ENV"
+          test -f "sites/$DOM/namelist.wps" || { echo "no namelist.wps for $SITE (sites/$DOM)" >&2; exit 1; }
           mkdir -p run_dir
-          cp "sites/$SITE/namelist.wps" "sites/$SITE/namelist.input" run_dir/
+          cp "sites/$DOM/namelist.wps" "sites/$DOM/namelist.input" run_dir/
 
       - name: Add inner nest
         if: inputs.add_nest_span_cells != ''
@@ -113,7 +118,7 @@ jobs:
           gh release upload "$TAG" -R "$CONFIG_REPO" --clobber \
             run_dir/geo_em.d0*.nc run_dir/namelist.wps run_dir/namelist.input
           echo "::notice::Fetch and commit with:"
-          echo "  gh release download $TAG -R $CONFIG_REPO -D sites/$SITE --clobber"
+          echo "  gh release download $TAG -R $CONFIG_REPO -D sites/$DOM --clobber"
 
       - name: Upload encrypted artifact
         run: |

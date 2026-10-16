@@ -47,25 +47,28 @@ on:
   workflow_dispatch:
     inputs:
       site:
-        description: Site key (must exist in the private config repo)
-        default: cloudbreak
+        description: Site key (blank = the WRF_ACTIVE_SITE repo variable, else cloudbreak)
+        default: ""
       forcing:
-        description: Forcing model (auto = every one that is missing)
+        description: Forcing model (auto = every one that is missing; both = GFS and IFS on the SAME cycle, in parallel)
         type: choice
-        options: [auto, gfs, ifs]
+        options: [auto, gfs, ifs, both]
         default: auto
       cycle:
         description: Cycle YYYYMMDDHH, or "auto" for newest complete (ignored when forcing=auto)
         default: auto
       hours:
-        description: Forecast length (hours, multiple of 6; IFS max 240)
-        default: "168"
+        description: Forecast length (hours, multiple of 6; IFS max 240; blank = the site's sites.json "hours", else 168)
+        default: ""
       budget_min:
         description: wrf.exe wall-clock budget per segment (minutes)
         default: "280"
       restart_interval_min:
         description: Restart cadence (minutes of model time)
         default: "720"
+      config_ref:
+        description: Branch of the private config repo (test a site before its config merges)
+        default: main
       upload_wrfout:
         description: Attach wrfout_d02 netCDF to the private release
         type: boolean
@@ -110,8 +113,22 @@ jobs:
         id: decide
         run: |
           chmod +x scripts/*.sh
-          SITE="${{ inputs.site || 'cloudbreak' }}"
-          HOURS="${{ inputs.hours || '168' }}"
+          # Which site the schedule runs is a REPO VARIABLE, not code: switch
+          # with `gh variable set WRF_ACTIVE_SITE -R chutcherson321/wrf-pipeline
+          # -b supertubos` and back again with `-b cloudbreak`. Every site's
+          # config stays in the private repo untouched either way.
+          SITE="${{ inputs.site || vars.WRF_ACTIVE_SITE || 'cloudbreak' }}"
+          # Forecast length is a property of the site (Peniche runs 120 h,
+          # Cloudbreak 168 h), so read it from sites.json unless the dispatch
+          # names one. Falls back to 168 if the config cannot be read.
+          HOURS="${{ inputs.hours }}"
+          if [ -z "$HOURS" ]; then
+            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json?ref=${{ inputs.config_ref || 'main' }}" -o sites.json || true
+            HOURS=$(python3 scripts/site_config.py hours "$SITE" --sites sites.json 2>/dev/null || echo 168)
+          fi
+          echo "site $SITE, ${HOURS} h"
           WANT="${{ inputs.forcing || 'auto' }}"
           { echo "site=$SITE"; echo "hours=$HOURS"; } >> "$GITHUB_OUTPUT"
 
@@ -165,9 +182,25 @@ jobs:
           TARGETS=""
           add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
 
+          # "both": GFS and IFS on ONE cycle, in parallel lanes -- the pair
+          # windstack compares. Two single-forcing dispatches would queue behind
+          # each other on the workflow concurrency group (two full runs in
+          # series), and auto picks each forcing's own newest missing cycle, so
+          # the two can land on different inits. With cycle=auto this takes the
+          # OLDER of the two newest complete cycles, the newest both can run.
+          # Like a named forcing it is an instruction: it runs even if published.
+          if [ "$WANT" = "both" ]; then
+            C="${{ inputs.cycle || 'auto' }}"
+            if [ "$C" = "auto" ]; then
+              CG=$(cycle_for gfs); CI=$(cycle_for ifs)
+              [ -n "$CG" ] && [ -n "$CI" ] || { echo "no common cycle: gfs=$CG ifs=$CI"; exit 1; }
+              if [[ "$CG" < "$CI" ]]; then C="$CG"; else C="$CI"; fi
+            fi
+            echo "dispatch: gfs+ifs $C"
+            add gfs "$C"; add ifs "$C"
           # Naming one forcing is an instruction, not a suggestion: it runs even
           # if that cycle is already published (that is how you force a redo).
-          if [ "$WANT" != "auto" ]; then
+          elif [ "$WANT" != "auto" ]; then
             C="${{ inputs.cycle || 'auto' }}"
             [ "$C" = "auto" ] && C=$(cycle_for "$WANT")
             [ -n "$C" ] || { echo "no $WANT cycle with complete data"; exit 1; }
@@ -226,4 +259,5 @@ jobs:
       budget_min: ${{ inputs.budget_min || '280' }}
       restart_interval_min: ${{ inputs.restart_interval_min || '720' }}
       upload_wrfout: ${{ github.event_name != 'workflow_dispatch' && true || inputs.upload_wrfout }}
+      config_ref: ${{ inputs.config_ref || 'main' }}
     secrets: inherit
