@@ -493,6 +493,23 @@ jobs:
             --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
             --inner-glob 'run_dir/wrf/seg*/wrfout_d03_*' --out wrf_store \
             --cycle "$CYCLE" --forcing "$FORCING"
+          # The same series at EVERY verification station inside the grid
+          # (config repo verify/stations.json), so the scorer can grade WRF at
+          # all of them rather than only the station next to the site point.
+          # Best effort: no station list, or an extraction error, publishes
+          # without points.json -- never costs the run.
+          if curl -sfL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
+               "https://api.github.com/repos/$CONFIG_REPO/contents/verify/stations.json" \
+               -o verify_stations.json; then
+            python scripts/extract_points.py --site "$SITE" --stations verify_stations.json \
+              --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
+              --inner-glob 'run_dir/wrf/seg*/wrfout_d03_*' \
+              --cycle "$CYCLE" --forcing "$FORCING" --sites-json sites.json \
+              --out wrf_store/points.json \
+              || { echo "::warning::extract_points failed; publishing without points.json"; rm -f wrf_store/points.json; }
+          else
+            echo "no verify/stations.json in $CONFIG_REPO; skipping points.json"
+          fi
           python scripts/make_wind_tiles.py \
             --wrfout-glob 'run_dir/wrf/seg*/wrfout_d02_*' \
             --cycle "$CYCLE" --out tiles_out
@@ -607,6 +624,9 @@ jobs:
           echo "publish: series ends $NEW_END (was ${OLD_END:-nothing published})"
 
           gh release upload "$TAG" -R "$CONFIG_REPO" --clobber "wrf_store/$SITE.json"
+          if [ -f wrf_store/points.json ]; then
+            gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrf_store/points.json
+          fi
           if [ "${{ needs.prep.outputs.upload_wrfout }}" = "true" ]; then
             tar -cf wrfout_d02.tar -C run_dir/wrf $(cd run_dir/wrf && ls -d seg*)
             gh release upload "$TAG" -R "$CONFIG_REPO" --clobber wrfout_d02.tar
