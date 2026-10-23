@@ -6,8 +6,8 @@ name: wrf-forcing
 # cover two cycles x two forcings — more than a day contains, so the pipeline
 # slipped further behind every day and was ~29 h stale by 2026-08-27.
 #
-# Every artifact name here carries the forcing: both lanes live in one workflow
-# run and therefore share one artifact namespace.
+# Every artifact name here carries the SITE and the forcing: all lanes (every
+# active site x GFS/IFS) live in one workflow run and share one artifact namespace.
 on:
   workflow_call:
     inputs:
@@ -159,7 +159,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wps-bundle-${{ inputs.forcing }}
+          name: wps-bundle-${{ inputs.site }}-${{ inputs.forcing }}
           path: bundle.tar.enc
           retention-days: 2
 
@@ -205,7 +205,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: wps-bundle-${{ inputs.forcing }}
+          name: wps-bundle-${{ inputs.site }}-${{ inputs.forcing }}
 
       - name: Unpack model inputs
         run: |
@@ -218,7 +218,7 @@ jobs:
         if: matrix.seg > 1
         uses: actions/download-artifact@v4
         with:
-          name: state-${{ inputs.forcing }}-seg${{ matrix.prev }}
+          name: state-${{ inputs.site }}-${{ inputs.forcing }}-seg${{ matrix.prev }}
 
       - name: Resume or skip
         id: resume
@@ -416,14 +416,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: state-${{ inputs.forcing }}-seg${{ matrix.seg }}
+          name: state-${{ inputs.site }}-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: state.tar.enc
           retention-days: 2
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: wrfout-${{ inputs.forcing }}-seg${{ matrix.seg }}
+          name: wrfout-${{ inputs.site }}-${{ inputs.forcing }}-seg${{ matrix.seg }}
           path: segout.tar.enc
           retention-days: 2
           compression-level: 0
@@ -448,11 +448,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: wps-bundle-${{ inputs.forcing }}
+          name: wps-bundle-${{ inputs.site }}-${{ inputs.forcing }}
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: "*-${{ inputs.forcing }}-seg*"
+          pattern: "*-${{ inputs.site }}-${{ inputs.forcing }}-seg*"
           path: dl
 
       - name: Collect segment outputs
@@ -461,13 +461,13 @@ jobs:
           scripts/crypt.sh dec bundle.tar.enc bundle.tar
           tar -xf bundle.tar sites.json
           FINISHED=false
-          for d in dl/wrfout-$FORCING-seg*; do
-            seg=$(basename "$d" | sed "s/^wrfout-$FORCING-//")
+          for d in dl/wrfout-$SITE-$FORCING-seg*; do
+            seg=$(basename "$d" | sed "s/^wrfout-$SITE-$FORCING-//")
             mkdir -p "run_dir/wrf/$seg"
             scripts/crypt.sh dec "$d/segout.tar.enc" "$seg.tar"
             tar -xf "$seg.tar" -C "run_dir/wrf/$seg"
           done
-          for d in dl/state-$FORCING-seg*; do
+          for d in dl/state-$SITE-$FORCING-seg*; do
             scripts/crypt.sh dec "$d/state.tar.enc" st.tar
             tar -tf st.tar | grep -q WRF_DONE && FINISHED=true
           done
@@ -570,12 +570,14 @@ jobs:
           aws s3 cp --endpoint-url "$EP" --region auto \
             manifest.json "s3://wavetrak-frames/wrf/$SITE/manifest.json" \
             --content-type application/json
-          if [ "$SITE" = "$ACTIVE_SITE" ]; then
+          # ACTIVE_SITE may be a list; the FIRST site owns the global manifest.
+          PRIMARY=$(echo "$ACTIVE_SITE" | tr ',' ' ' | awk '{print $1}')
+          if [ "$SITE" = "$PRIMARY" ]; then
             aws s3 cp --endpoint-url "$EP" --region auto \
               manifest.json "s3://wavetrak-frames/wrf/manifest.json" \
               --content-type application/json
           else
-            echo "R2: $SITE is not the active site ($ACTIVE_SITE) - global manifest left alone"
+            echo "R2: $SITE is not the primary site ($PRIMARY) - global manifest left alone"
           fi
           echo "R2: $DEST/{latest,$CYCLE}.json + wrf/$SITE/manifest.json"
 

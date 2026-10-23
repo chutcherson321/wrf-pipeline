@@ -157,7 +157,10 @@ $S3 cp manifest.json "s3://$BUCKET/wrf/$SITE/manifest.json" \
   --content-type application/json --only-show-errors
 # The site-less key is the page's default view: only the active site writes it
 # (ACTIVE_SITE comes from the workflow; unset = old behaviour, always write).
-if [ -z "${ACTIVE_SITE:-}" ] || [ "$SITE" = "$ACTIVE_SITE" ]; then
+# ACTIVE_SITE may be a comma list (several sites run at once): its FIRST site
+# owns the global manifest.
+PRIMARY_SITE=$(echo "${ACTIVE_SITE:-}" | tr ',' ' ' | awk '{print $1}')
+if [ -z "$PRIMARY_SITE" ] || [ "$SITE" = "$PRIMARY_SITE" ]; then
   $S3 cp manifest.json "s3://$BUCKET/wrf/manifest.json" \
     --content-type application/json --only-show-errors
 fi
