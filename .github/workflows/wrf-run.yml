@@ -47,7 +47,7 @@ on:
   workflow_dispatch:
     inputs:
       site:
-        description: Site key (blank = the WRF_ACTIVE_SITE repo variable, else cloudbreak)
+        description: Site key or comma list (blank = the WRF_ACTIVE_SITE repo variable, else cloudbreak)
         default: ""
       forcing:
         description: Forcing model (auto = every one that is missing; both = GFS and IFS on the SAME cycle, in parallel)
@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      # JSON array of {forcing, cycle} — one lane per entry, "[]" for nothing
+      # JSON array of {site, hours, forcing, cycle} — one lane per entry, "[]" for nothing
       targets: ${{ steps.decide.outputs.targets }}
       site: ${{ steps.decide.outputs.site }}
       hours: ${{ steps.decide.outputs.hours }}
@@ -113,24 +113,28 @@ jobs:
         id: decide
         run: |
           chmod +x scripts/*.sh
-          # Which site the schedule runs is a REPO VARIABLE, not code: switch
-          # with `gh variable set WRF_ACTIVE_SITE -R chutcherson321/wrf-pipeline
-          # -b supertubos` and back again with `-b cloudbreak`. Every site's
-          # config stays in the private repo untouched either way.
-          SITE="${{ inputs.site || vars.WRF_ACTIVE_SITE || 'cloudbreak' }}"
+          # Which sites the schedule runs is a REPO VARIABLE, not code: a comma
+          # list, e.g. `gh variable set WRF_ACTIVE_SITE -R chutcherson321/wrf-pipeline
+          # -b nazare,cloud9`. Every site gets its own GFS + IFS lanes in this
+          # run. The FIRST site owns the global windstack manifest (the page's
+          # default view); every site still writes wrf/<site>/manifest.json.
+          # Site configs stay in the private repo untouched either way.
+          SITES=$(echo "${{ inputs.site || vars.WRF_ACTIVE_SITE || 'cloudbreak' }}" | tr ',' ' ')
           # Forecast length is a property of the site (Peniche runs 120 h,
           # Cloudbreak 168 h), so read it from sites.json unless the dispatch
           # names one. Falls back to 168 if the config cannot be read.
-          HOURS="${{ inputs.hours }}"
-          if [ -z "$HOURS" ]; then
-            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json?ref=${{ inputs.config_ref || 'main' }}" -o sites.json || true
-            HOURS=$(python3 scripts/site_config.py hours "$SITE" --sites sites.json 2>/dev/null || echo 168)
-          fi
-          echo "site $SITE, ${HOURS} h"
+          curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/$CONFIG_REPO/contents/sites.json?ref=${{ inputs.config_ref || 'main' }}" -o sites.json || true
+          site_hours() {
+            local h="${{ inputs.hours }}"
+            [ -n "$h" ] || h=$(python3 scripts/site_config.py hours "$1" --sites sites.json 2>/dev/null || echo 168)
+            echo "$h"
+          }
+          FIRST=$(echo $SITES | awk '{print $1}')
+          echo "sites: $SITES"
           WANT="${{ inputs.forcing || 'auto' }}"
-          { echo "site=$SITE"; echo "hours=$HOURS"; } >> "$GITHUB_OUTPUT"
+          { echo "site=$FIRST"; echo "hours=$(site_hours "$FIRST")"; } >> "$GITHUB_OUTPUT"
 
           # WRF runs 00/12z ONLY -- CH's decision, and make_manifest.py's
           # WRF_RUNS = [0, 12] encodes the same thing so the page can say "not
@@ -180,7 +184,12 @@ jobs:
               || date -u -r "$(( e - 43200 ))" +%Y%m%d%H
           }
           TARGETS=""
-          add() { TARGETS="$TARGETS{\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
+          # One lane = {site, hours, forcing, cycle}; SITE and HOURS are set by
+          # the per-site loop below.
+          add() { TARGETS="$TARGETS{\"site\":\"$SITE\",\"hours\":\"$HOURS\",\"forcing\":\"$1\",\"cycle\":\"$2\"},"; }
+          for SITE in $SITES; do
+          HOURS=$(site_hours "$SITE")
+          echo "== $SITE (${HOURS} h)"
 
           # "both": GFS and IFS on ONE cycle, in parallel lanes -- the pair
           # windstack compares. Two single-forcing dispatches would queue behind
@@ -225,7 +234,7 @@ jobs:
               TRY="$C"
               for _ in 1 2 3; do
                 if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$TRY"; then
-                  echo "$F $TRY: already published"
+                  echo "$SITE $F $TRY: already published"
                 else
                   PICK="$TRY"; break
                 fi
@@ -233,10 +242,11 @@ jobs:
               done
               if [ -z "$PICK" ]; then continue; fi
               C="$PICK"
-              echo "$F $C: MISSING - queueing a lane"
+              echo "$SITE $F $C: MISSING - queueing a lane"
               add "$F" "$C"
             done
           fi
+          done
           echo "targets=[${TARGETS%,}]" >> "$GITHUB_OUTPUT"
           echo "planned: [${TARGETS%,}]"
 
@@ -245,17 +255,17 @@ jobs:
   run:
     needs: plan
     if: needs.plan.outputs.targets != '[]'
-    name: ${{ matrix.target.forcing }}
+    name: ${{ matrix.target.site }} ${{ matrix.target.forcing }}
     strategy:
       fail-fast: false
       matrix:
         target: ${{ fromJSON(needs.plan.outputs.targets) }}
     uses: ./.github/workflows/wrf-forcing.yml
     with:
-      site: ${{ needs.plan.outputs.site }}
+      site: ${{ matrix.target.site }}
       forcing: ${{ matrix.target.forcing }}
       cycle: ${{ matrix.target.cycle }}
-      hours: ${{ needs.plan.outputs.hours }}
+      hours: ${{ matrix.target.hours }}
       budget_min: ${{ inputs.budget_min || '280' }}
       restart_interval_min: ${{ inputs.restart_interval_min || '720' }}
       upload_wrfout: ${{ github.event_name != 'workflow_dispatch' && true || inputs.upload_wrfout }}
