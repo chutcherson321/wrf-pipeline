@@ -84,7 +84,7 @@ RESTART_INTERVAL_MIN = 720
 
 def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
                   forcing: str, restart_interval: int,
-                  nest_hours: int = 0) -> str:
+                  nest_hours: int = 0, block_min: int = BLOCK_MIN) -> str:
     """`nest_hours` > 0 stops the INNERMOST domain that early.
 
     This has to happen in the INITIAL namelist, not only at a restart.
@@ -109,7 +109,7 @@ def rewrite_input(text: str, start: datetime, end: datetime, hours: int,
         # 36 h, so the partial publisher saw nothing for a day and a half.
         "frames_per_outfile": per_dom_each(
             "frames_per_outfile",
-            [max(1, BLOCK_MIN // h) for h in history_intervals(text, n)]),
+            [max(1, block_min // h) for h in history_intervals(text, n)]),
         "run_days": f" run_days               = {days},",
         "run_hours": f" run_hours              = {rem},",
         "start_year": per_dom("start_year", start.year, n),
@@ -168,7 +168,7 @@ def main():
     (out / "namelist.input").write_text(
         rewrite_input((site_dir / "namelist.input").read_text(), start, end,
                       args.hours, args.forcing, args.restart_interval,
-                      nest_hours))
+                      nest_hours, site_config.publish_block_min(sites, args.site)))
     print(f"namelists written to {out} for {args.site} {args.cycle} "
           f"+{args.hours}h forcing={args.forcing}"
           + (f" inner nest +{nest_hours}h" if nest_hours > 0 else ""))

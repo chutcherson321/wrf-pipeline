@@ -17,6 +17,12 @@ One place answers the questions every stage used to answer for itself:
                           or a map keyed by cycle hour, {"00": 48, "12": 60},
                           so the 1 km -> 3 km seam can always fall at 00Z.
                           0 = no inner nest.
+  publish-block SITE      model minutes per wrfout file: `publish_block_h` in
+                          the entry (hours), else 12. The partial publisher
+                          posts one closed file at a time, so a 3 h block puts
+                          the first hours on the page ~4x sooner than 12 h.
+                          Must divide 12 h so files keep lining up with the
+                          12 h restarts.
 
 Usage from a shell step: python3 scripts/site_config.py nest-hours supertubos 2026101612
 Pass --sites PATH when sites.json is not at the repo root.
@@ -45,6 +51,19 @@ def run_hours(sites, site):
     return int(entry(sites, site).get("hours") or DEFAULT_HOURS)
 
 
+DEFAULT_BLOCK_MIN = 720
+
+
+def publish_block_min(sites, site):
+    h = entry(sites, site).get("publish_block_h")
+    if not h:
+        return DEFAULT_BLOCK_MIN
+    m = int(round(float(h) * 60))
+    if m <= 0 or DEFAULT_BLOCK_MIN % m:
+        raise SystemExit(f"{site}: publish_block_h {h} must divide 12 h")
+    return m
+
+
 def nest_hours(sites, site, cycle=None):
     """Innermost-nest length in forecast hours for `cycle` (YYYYMMDDHH)."""
     raw = (entry(sites, site).get("wrf_domain") or {}).get("d03_hours")
@@ -64,7 +83,7 @@ def nest_hours(sites, site, cycle=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["domain-dir", "hours", "nest-hours"])
+    ap.add_argument("what", choices=["domain-dir", "hours", "nest-hours", "publish-block"])
     ap.add_argument("site")
     ap.add_argument("cycle", nargs="?")
     ap.add_argument("--sites", default=None)
@@ -74,6 +93,8 @@ def main():
         print(domain_dir(sites, a.site))
     elif a.what == "hours":
         print(run_hours(sites, a.site))
+    elif a.what == "publish-block":
+        print(publish_block_min(sites, a.site))
     else:
         print(nest_hours(sites, a.site, a.cycle))
 
