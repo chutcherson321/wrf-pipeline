@@ -80,17 +80,17 @@ on:
 # artifacts on a public repo are publicly downloadable.
 permissions:
   contents: read
+  actions: read     # the planner lists this workflow's own active lanes (see BUSY below)
 
 env:
   CONFIG_REPO: chutcherson321/wavetrak-wrf
 
-# One run at a time — but a run now covers BOTH forcings in parallel lanes, so
-# this no longer serializes GFS behind IFS. A tick that lands mid-run queues
-# instead of starting a duplicate, and by the time it starts its targets are
-# usually published, so it exits in seconds.
-concurrency:
-  group: wrf-run
-  cancel-in-progress: false
+# No workflow-level concurrency (until 2026-11-10 it was one group, wrf-run): that made
+# every site wait for the slowest run in front of it, so a new Mavericks cycle sat
+# behind a 20 h Nazare run.  Now each {site, forcing} lane is independent: the planner
+# serializes itself (job-level group below) and skips any site+forcing that still has
+# a lane active in another run of this workflow, so one never starts twice and no
+# site waits on another.
 
 jobs:
   # Cheap decision job: what is missing that we can actually run right now?
@@ -99,6 +99,9 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: wrf-run-plan
+      cancel-in-progress: false
     outputs:
       # JSON array of {site, hours, forcing, cycle} — one lane per entry, "[]" for nothing
       targets: ${{ steps.decide.outputs.targets }}
@@ -106,6 +109,7 @@ jobs:
       hours: ${{ steps.decide.outputs.hours }}
     env:
       GH_TOKEN: ${{ secrets.CONFIG_TOKEN }}
+      ACTIONS_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -183,6 +187,31 @@ jobs:
             date -u -d "@$(( e - 43200 ))" +%Y%m%d%H 2>/dev/null \
               || date -u -r "$(( e - 43200 ))" +%Y%m%d%H
           }
+          # BUSY: "site forcing" pairs with a lane still active (queued or running) in
+          # another run of this workflow.  Lane jobs are named "<site> <forcing> / ...".
+          # Auto planning skips them: the lane picks up its next cycle on the first
+          # tick after it finishes, newest first.  If the API call fails, BUSY is
+          # empty and planning behaves as before.
+          BUSY=$(python3 - <<'PY' || true
+          import json, os, urllib.request
+          repo, me, tok = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"], os.environ["ACTIONS_TOKEN"]
+          def get(url):
+              req = urllib.request.Request(url, headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(req, timeout=30))
+          busy = set()
+          for st in ("in_progress", "queued", "waiting", "pending"):
+              runs = get(f"https://api.github.com/repos/{repo}/actions/workflows/wrf-run.yml/runs?status={st}&per_page=50")
+              for run in runs.get("workflow_runs", []):
+                  if str(run["id"]) == me:
+                      continue
+                  for job in get(f"{run['jobs_url']}?per_page=100&filter=latest").get("jobs", []):
+                      if job["status"] != "completed" and " / " in job["name"]:
+                          busy.add(job["name"].split(" / ")[0].strip())
+          print("|".join(sorted(busy)))
+          PY
+          )
+          echo "busy lanes: ${BUSY:-none}"
+          is_busy() { case "|$BUSY|" in *"|$1 $2|"*) return 0 ;; esac; return 1; }
           TARGETS=""
           # One lane = {site, hours, forcing, cycle}; SITE and HOURS are set by
           # the per-site loop below.
@@ -228,6 +257,7 @@ jobs:
             # beyond that the forcing data starts ageing out upstream and a
             # queued run would fail at the download instead.
             for F in gfs ifs; do
+              if is_busy "$SITE" "$F"; then echo "$SITE $F: lane still running in another run - skipped"; continue; fi
               C=$(cycle_for "$F")
               if [ -z "$C" ]; then echo "$F: no cycle with complete data yet"; continue; fi
               PICK=""
