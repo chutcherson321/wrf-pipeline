@@ -167,26 +167,6 @@ jobs:
             else c=$(scripts/latest_cycle.sh "$HOURS" 2>/dev/null || true); fi
             [ -n "$c" ] && to_wrf_cycle "$c" || true
           }
-          # Step back a whole backbone cycle (12 h), via epoch seconds so no
-          # relative-date parsing is involved.
-          #
-          # The previous form -- date -d "20260829 00:00:00 -12 hours" -- was
-          # silently WRONG on GNU date, which is what the runners have. GNU date
-          # read "-12" as a UTC OFFSET, making 00:00 at UTC-12 = 12:00Z, then
-          # consumed the bare word "hours" as a relative item meaning +1 hour.
-          # So back12 2026082900 returned 2026082913: forward 13 h, not back 12.
-          # Observed 2026-08-29 in run 33266417525, which queued ifs 2026082913,
-          # a cycle that cannot exist -- IFS open data is 00z/12z only -- so
-          # fetch_ifs.sh refused it and the whole ECMWF lane died at prep. It
-          # only bites when the newest cycle is already published, which is
-          # exactly the retry path 3d01f48 added.
-          back12() {
-            local e
-            e=$(date -u -d "${1:0:4}-${1:4:2}-${1:6:2} ${1:8:2}:00:00 UTC" +%s 2>/dev/null) \
-              || e=$(date -u -j -f "%Y%m%d%H" "$1" +%s)
-            date -u -d "@$(( e - 43200 ))" +%Y%m%d%H 2>/dev/null \
-              || date -u -r "$(( e - 43200 ))" +%Y%m%d%H
-          }
           # BUSY: "site forcing" pairs with a lane still active (queued or running) in
           # another run of this workflow.  Lane jobs are named "<site> <forcing> / ...".
           # Auto planning skips them: the lane picks up its next cycle on the first
@@ -248,28 +228,27 @@ jobs:
             # Every forcing with an unpublished cycle in the recent window.
             # Both are queued at once and integrate in parallel lanes.
             #
-            # RETRY WINDOW: this used to look at the newest complete cycle and
-            # nothing else, so a cycle whose run failed was NEVER retried -- the
-            # pipeline simply waited for the next one and left a permanent hole
-            # in the history. Walking back two backbone cycles (24 h) means one
-            # failure gets picked up on the next tick instead. Newest first, so
-            # a backfill never delays current guidance; bounded at 24 h because
-            # beyond that the forcing data starts ageing out upstream and a
-            # queued run would fail at the download instead.
+            # RETRY: a failed cycle is picked up again on the next tick, as long as
+            # it is still the newest cycle with complete data. Until 2026-11-11 the
+            # planner also walked back 24 h past published cycles to fill holes;
+            # that delayed current guidance (see below), so holes behind a newer
+            # published forecast are now left alone.
             for F in gfs ifs; do
               if is_busy "$SITE" "$F"; then echo "$SITE $F: lane still running in another run - skipped"; continue; fi
               C=$(cycle_for "$F")
               if [ -z "$C" ]; then echo "$F: no cycle with complete data yet"; continue; fi
+              # Only the newest complete cycle. Never walk back PAST a published
+              # one: a newer forecast is already out, and an older one only takes
+              # the lane for ~7 h. On 2026-11-11 the old 24 h walk-back queued
+              # 2026110912 -- older than the Mavericks site itself -- behind a
+              # published 10/00Z, and the fresh 11/00Z lanes waited 7-8 h for it.
+              # A failed cycle is still retried while it is the newest complete one.
               PICK=""
-              TRY="$C"
-              for _ in 1 2 3; do
-                if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$TRY"; then
-                  echo "$SITE $F $TRY: already published"
-                else
-                  PICK="$TRY"; break
-                fi
-                TRY=$(back12 "$TRY")
-              done
+              if scripts/is_published.sh "$CONFIG_REPO" "$SITE" "$F" "$C"; then
+                echo "$SITE $F $C: already published"
+              else
+                PICK="$C"
+              fi
               if [ -z "$PICK" ]; then continue; fi
               C="$PICK"
               echo "$SITE $F $C: MISSING - queueing a lane"
