@@ -64,6 +64,12 @@ jobs:
           python3 -m pip install --quiet pandas
           python3 scripts/domain_merge.test.py
 
+      # The verification grid-point rule (buoys/piers -> water cell, land -> land cell). numpy only.
+      - name: Grid-point rule suite
+        run: |
+          python3 -m pip install --quiet numpy
+          python3 scripts/grid_point.test.py
+
       # Which wrfouts the partial publisher may read while wrf.exe runs: real
       # netCDF files and a real HDF5 lock held by a writer process (the
       # 2026-10-16 stall), plus readable-but-unwritten last frames.

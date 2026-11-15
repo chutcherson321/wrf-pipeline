@@ -7,7 +7,9 @@ one point WRF could only ever be scored at the single station within 12 km of it
 scored at all of them. This writes the same per-step series for every station in the config
 repo's verify/stations.json that sits inside the grid, using the same rules as the site point:
 
-  - nearest grid cell, per domain (indices are per-grid);
+  - the verification grid-point rule, per domain (indices are per-grid): buoys and piers take the
+    nearest WATER cell, land stations the nearest LAND cell, within 5 cells of the geometric nearest
+    (grid_point.py; the same rule wavetrak-fetch applies to WOOF, HRRR and RRFS);
   - the 1 km nest where the station is in its interior (clear of the 5-cell relaxation zone)
     up to the site's per-cycle d03 bound, the 3 km grid after it (domain_merge.merge_domains);
   - a station outside d02's interior is skipped (no forecast to grade).
@@ -37,6 +39,7 @@ from netCDF4 import Dataset
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import site_config                                          # noqa: E402
 from domain_merge import inside_interior, merge_domains     # noqa: E402
+from grid_point import nearest_matching, wanted_surface      # noqa: E402
 
 KT = 1.943844
 
@@ -65,12 +68,9 @@ def load_domain(paths):
                 t2=t2[idx], lat=lat, lon=lon, land=land)
 
 
-def nearest(dom, la, lo):
-    dist = np.hypot(dom["lat"] - la, (dom["lon"] - lo) * math.cos(math.radians(la)))
-    j, i = np.unravel_index(dist.argmin(), dist.shape)
-    km = math.hypot((dom["lat"][j, i] - la) * 111.2,
-                    (dom["lon"][j, i] - lo) * 111.2 * math.cos(math.radians(la)))
-    return int(j), int(i), km
+def nearest(dom, la, lo, want=None):
+    """Grid-point rule cell (j, i, km, mask_ok); `want` = 'sea' / 'land' / None (plain nearest)."""
+    return nearest_matching(dom["lat"], dom["lon"], dom["land"], la, lo, want)
 
 
 def frame(dom, j, i):
@@ -116,19 +116,22 @@ def main():
 
     out = {}
     for s in cand:
-        j2, i2, km2 = nearest(d02, s["lat"], s["lon"])
+        want = wanted_surface(s)
+        j2, i2, km2, ok2 = nearest(d02, s["lat"], s["lon"], want)
         if not inside_interior(j2, i2, d02["lat"].shape):
             print(f"  {s['id']:>8}  skip: outside the d02 interior")
             continue
         grids = {"d02": dict(ji=[j2, i2], km=round(km2, 2),
-                             land=None if np.isnan(d02["land"][j2, i2]) else int(d02["land"][j2, i2]))}
+                             land=None if np.isnan(d02["land"][j2, i2]) else int(d02["land"][j2, i2]),
+                             surface=want, mask_ok=ok2)}
         inner = None
         if d03 is not None:
-            j3, i3, km3 = nearest(d03, s["lat"], s["lon"])
+            j3, i3, km3, ok3 = nearest(d03, s["lat"], s["lon"], want)
             if inside_interior(j3, i3, d03["lat"].shape):
                 inner = frame(d03, j3, i3)
                 grids["d03"] = dict(ji=[j3, i3], km=round(km3, 2),
-                                    land=None if np.isnan(d03["land"][j3, i3]) else int(d03["land"][j3, i3]))
+                                    land=None if np.isnan(d03["land"][j3, i3]) else int(d03["land"][j3, i3]),
+                                    surface=want, mask_ok=ok3)
         df = merge_domains(inner, frame(d02, j2, i2), inner_end).round(3)
         rows = json.loads(df.reset_index().to_json(orient="records", date_format="iso"))
         out[s["id"]] = dict(name=s.get("name"), lat=s["lat"], lon=s["lon"], grids=grids, series=rows)
